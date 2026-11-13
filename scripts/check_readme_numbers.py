@@ -5,10 +5,11 @@ Three kinds of check, all failing with exit status 1:
 
 1. The tables pasted into README.md equal the tables in results/*/tables.md (the same test as
    ``make_tables.py --check``).
-2. Each entry of CHECKS names a results file, a text that must occur in that file (a table row or
-   a value) and a text that must occur in README.md. When a result is regenerated and its number
-   changes, the first part fails; when the README is edited by hand and no longer quotes the
-   number, the second fails.
+2. Each entry of CHECKS names a file (a results file, or the source or protocol file that holds a
+   number the README quotes), a text that must occur in that file (a table row or a value) and a
+   text that must occur in README.md. When a result is regenerated and its number changes, the
+   first part fails; when the README is edited by hand and no longer quotes the number, the
+   second fails.
 3. Every relative link or image in README.md points to a file that exists.
 
 (Modelled on scripts/check_readme_numbers.py of market-risk-engine.) Standard library only.
@@ -26,7 +27,7 @@ import make_tables
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# (results file, text that must occur in it, text that must occur in README.md)
+# (file, text that must occur in it, text that must occur in README.md)
 CHECKS: list[tuple[str, str, str]] = [
     # D, the oracle and the proxy (tables M1, M4)
     ("results/markouts/tables.md", "| saturated events, % | 83.7 |",
@@ -56,20 +57,48 @@ CHECKS: list[tuple[str, str, str]] = [
      "every policy loses money in the backtest (table B2)"),
     ("results/backtest/tables.md",
      "| null | `release_aware` | -9.10 (0.35) | 2.20 | 104.6 | 657.0 | -1.39 | -9.22 | 0.937 "
-     "| 4.73 |",
-     "`release_aware` quotes 4.73 cents on average against 4.81 for `flat_matched` in the null"),
+     "| 4.73 | 1.60 |",
+     "(4.73 cents against 4.81 for `flat_matched` in the null world"),
     ("results/backtest/tables.md",
      "| null | `flat_matched` | -10.32 (0.33) | 2.37 | 115.1 | 719.2 | -1.44 | -10.46 | 0.937 "
-     "| 4.81 |",
-     "`release_aware` quotes 4.73 cents on average against 4.81 for `flat_matched` in the null"),
+     "| 4.81 | 1.25 |",
+     "(4.73 cents against 4.81 for `flat_matched` in the null world"),
     ("results/backtest/tables.md",
      "| planted | `release_aware` | -11.14 (0.21) | 2.09 | 103.3 | 649.3 | -1.72 | -10.58 | 0.917 "
-     "| 4.97 |",
-     "world, and 4.97 against 5.37 in the planted world"),
+     "| 4.97 | 2.54 |",
+     "and 4.97 against 5.37 in the planted world)"),
     ("results/backtest/tables.md",
      "| planted | `flat_matched` | -13.97 (0.29) | 2.18 | 111.6 | 696.8 | -2.00 | -13.25 | 0.917 "
-     "| 5.37 |",
-     "world, and 4.97 against 5.37 in the planted world"),
+     "| 5.37 | 1.65 |",
+     "and 4.97 against 5.37 in the planted world)"),
+    # the premium at the fills (tables B2 and B10)
+    ("results/backtest/tables.md",
+     "| null | `release_aware` | -9.10 (0.35) | 2.20 | 104.6 | 657.0 | -1.39 | -9.22 | 0.937 "
+     "| 4.73 | 1.60 |",
+     "`release_aware` quotes 1.60 cents at its fills against 1.25 for `flat_matched` in the null"),
+    ("results/backtest/tables.md",
+     "| null | `flat_matched` | -10.32 (0.33) | 2.37 | 115.1 | 719.2 | -1.44 | -10.46 | 0.937 "
+     "| 4.81 | 1.25 |",
+     "`release_aware` quotes 1.60 cents at its fills against 1.25 for `flat_matched` in the null"),
+    ("results/backtest/tables.md",
+     "| planted | `release_aware` | -11.14 (0.21) | 2.09 | 103.3 | 649.3 | -1.72 | -10.58 | 0.917 "
+     "| 4.97 | 2.54 |",
+     "world and 2.54 against 1.65 in the planted world (B2)"),
+    ("results/backtest/tables.md",
+     "| planted | `flat_matched` | -13.97 (0.29) | 2.18 | 111.6 | 696.8 | -2.00 | -13.25 | 0.917 "
+     "| 5.37 | 1.65 |",
+     "world and 2.54 against 1.65 in the planted world (B2)"),
+    ("results/backtest/tables.md",
+     "| null | 1.28 (1.26 to 1.30) | 1.60 | 1.25 | 1.60 | -0.17 (0.08) | -0.59 to +0.06 | 3 | 0 |",
+     "`release_aware` earns less in both worlds, 0.17 and 0.38 USD per event (B10, exploratory)"),
+    ("results/backtest/tables.md",
+     "| planted | 1.54 (1.50 to 1.59) | 2.54 | 1.65 | 2.54 | -0.38 (0.12) | -1.04 to +0.38 "
+     "| 1 | 0 |",
+     "`release_aware` earns less in both worlds, 0.17 and 0.38 USD per event (B10, exploratory)"),
+    ("results/backtest/tables.md", "against 1.25 for `flat_matched` (+28%)",
+     "`release_aware` quotes 28% (null world) and 54% (planted world)"),
+    ("results/backtest/tables.md", "against 1.65 for `flat_matched` (+54%)",
+     "`release_aware` quotes 28% (null world) and 54% (planted world)"),
     ("results/backtest/tables.md",
      "| 12 | 10 | +2.83 (0.14) | 0 | 10 | -1.22 (0.12) | 9 | 0 | 2.80 | 1.65 |",
      "`release_aware` earns less than `pooled_premium` and with 30 hours more"),
@@ -78,8 +107,6 @@ CHECKS: list[tuple[str, str, str]] = [
      "`release_aware` earns less than `pooled_premium` and with 30 hours more"),
     ("results/backtest/tables.md", "changes sign at F = 1.47",
      "it earns more until that premium is scaled by about 1.5 and less beyond (B9)"),
-    ("results/backtest/tables.md", "changes sign at F = 1.47",
-     "less once that premium is scaled by about 1.5"),
     # recalibration (table C1)
     ("results/calibration/tables.md", "| 1.0 | 100 | 50 | -2.76 (0.35) |",
      "in every row (its Brier skill is negative)"),
@@ -92,6 +119,13 @@ CHECKS: list[tuple[str, str, str]] = [
     ("results/calibration/tables.md",
      "| 0.7 | 1000 | 950 | 1.05 (0.06) | 1.71 | 24.0 (3.0) |",
      "(0.7) and 1000 events it is supported in 24% of the datasets"),
+    # the labels of P2 (the settings of the protocol, the quote parameters and docs/protocol.md)
+    ("src/kalshi_mm/protocol.py", "min_releases: int = 100", "fewer than 100 releases enter it"),
+    ("src/kalshi_mm/quoting.py", "min_history_events: int = 20", "after a burn-in of 20)"),
+    ("src/kalshi_mm/protocol.py", "max_off_tick_share: float = 0.05",
+     "than 5% of the kept trades are off the 0.01 USD tick"),
+    ("docs/protocol.md", "holds about 100 scheduled releases",
+     "The range holds about 100 scheduled"),
     # the mutation check
     ("results/mutation_check.txt", "437 of 437 mutants caught.",
      "437 hand-written mutants, all caught"),

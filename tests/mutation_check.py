@@ -1600,6 +1600,15 @@ mutant("protocol: the family does not get the share of the trades off the tick",
 mutant("protocol: the results do not keep the share of the trades off the tick",
        PIPES, "protocol.py",
        "deviations(settings), off_tick_share,", "deviations(settings), None,")
+mutant("protocol: the premium at the fills of a policy is the mean over its markets",
+       PIPES, "protocol.py",
+       '| {"fill_premium": mean_fill_premium(evaluated[evaluated["policy"] == policy])}',
+       '| {"fill_premium": float(evaluated.loc[evaluated["policy"] == policy,\n'
+       '                                         "fill_premium"].mean())}')
+mutant("report: R5 gives the premium at the fills in USD under a heading of cents",
+       "tests/test_protocol_report.py", "protocol_report.py",
+       '_num(v["quotes_live_share"], 2), _num(v["fill_premium"], 2, 100)])',
+       '_num(v["quotes_live_share"], 2), _num(v["fill_premium"], 2)])')
 mutant("report: the sample table names a share equal to the limit as above it",
        PIPE, "protocol_report.py",
        "if share is not None and share > s.max_off_tick_share:",
