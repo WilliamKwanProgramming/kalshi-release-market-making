@@ -106,8 +106,8 @@ $D$ is a difference of markouts measured on the tape. It is what a maker feels p
 it is not an estimate of the informed share $\pi$: the markout counts every trade in the next $h$,
 so a surge of the trade rate raises it with no change of $\pi$; it scales with $m(1-m)$, which
 falls as prices move to 0 or 1 before a release; and the tape-only proxy is fresher where trades
-are frequent. On the synthetic world the surge alone gives about half of the planted $D$ (the
-recovery study reports it). Two further quantities are therefore reported next to $D$: the markout
+are frequent. On the synthetic world the surge alone gives a large share of the planted $D$ (table M4 of
+the README reports it, with an interval). Two further quantities are therefore reported next to $D$: the markout
 divided by $4\hat m(1-\hat m)$, in cents per contract at a price of 50 cents, for trades whose
 $\hat m$ is in $[0.03, 0.97]$; and $D$ with the near window $(h, 30]$ minutes, which no
 truncation of the horizon touches.
