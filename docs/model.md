@@ -116,14 +116,18 @@ the variance still to be borne. The policies differ in $v$ and in the premium $h
 |---|---|---|---|
 | `always_on` | $\sigma_p^2\tau_h$ with $\sigma_p = \hat\sigma\,m(1-m)$ | 0 | always |
 | `pull_only` | as `always_on` | 0 | none within 5 minutes of the release |
-| `pooled_premium` | $\sigma_p^2\tau_h + m(1-m)$ | $\widehat{\mathrm{AS}}$ pooled over all minutes to release | always |
-| `release_aware` | $\sigma_p^2\tau_h + m(1-m)$ | $\widehat{\mathrm{AS}}$ of the bucket containing $\tau$ | always |
+| `pooled_premium` | $\sigma_p^2\tau_h + m(1-m)$ | $4m(1-m)\,\widehat{\mathrm{AS}}$, pooled over all minutes to release | always |
+| `release_aware` | $\sigma_p^2\tau_h + m(1-m)$ | $4m(1-m)\,\widehat{\mathrm{AS}}$ of the bucket containing $\tau$ | always |
 
 $\hat\sigma$ is the realized logit volatility of the mid proxy over the previous 2 hours of the
-same market, floored at the walk-forward average of earlier events. $\widehat{\mathrm{AS}}$ is the
-mean 5-minute adverse selection in earlier events only, floored at zero. Until 20 earlier events
-exist, the premium is zero. The primary comparison is `release_aware` against `pooled_premium`,
-which differ only in whether the premium depends on minutes to release. The others are secondary.
+same market, floored at the walk-forward average of earlier events. The adverse selection of a
+trade scales with $p(1-p)$ (section 3), so the premium is estimated per unit of $4\,m(1-m)$, the
+value of $m(1-m)$ at $m = \tfrac12$ divided out: $\widehat{\mathrm{AS}}$ is the mean of
+$\mathrm{AS}_i / \big(4\,\hat m_{t_i^-}(1-\hat m_{t_i^-})\big)$ over the trades of earlier
+events with $\hat m_{t_i^-}(1-\hat m_{t_i^-}) \ge 0.05$, floored at zero, and the quote uses
+$h_{\text{adv}} = \widehat{\mathrm{AS}} \cdot 4\,m(1-m)$. Until 20 earlier events exist, the
+premium is zero. The primary comparison is `release_aware` against `pooled_premium`, which differ
+only in whether the premium depends on minutes to release. The others are secondary.
 
 ## 7. Fills, fees and settlement
 
