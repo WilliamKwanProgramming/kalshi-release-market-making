@@ -51,6 +51,7 @@ __all__ = [
     "HistoricalCutoff",
     "KalshiApiError",
     "KalshiClient",
+    "parse_iso_datetime",
     "parse_iso_time",
     "urllib_transport",
 ]
@@ -88,8 +89,8 @@ class HistoricalCutoff:
     orders_updated_ts: float
 
 
-def parse_iso_time(text: str) -> float:
-    """Unix seconds of an ISO 8601 timestamp that carries an offset (``Z`` or ``+HH:MM``).
+def parse_iso_datetime(text: str) -> datetime.datetime:
+    """An ISO 8601 timestamp that carries an offset (``Z`` or ``+HH:MM``), as a UTC datetime.
 
     Microseconds are kept; digits beyond the sixth are dropped. A timestamp without an offset, or
     one that cannot be read, raises ``ValueError``: a guessed time zone would shift every release.
@@ -99,7 +100,17 @@ def parse_iso_time(text: str) -> float:
     moment = datetime.datetime.fromisoformat(text)
     if moment.tzinfo is None:
         raise ValueError(f"the timestamp {text!r} has no UTC offset (write it like ...T12:30:00Z)")
-    return (moment - _EPOCH) / datetime.timedelta(seconds=1)
+    return moment.astimezone(datetime.UTC)
+
+
+def parse_iso_time(text: str) -> float:
+    """Unix seconds of a timestamp read by :func:`parse_iso_datetime`, microseconds kept.
+
+    The division of two ``timedelta`` objects is an integer division of microseconds, rounded
+    once, so times a microsecond apart stay different floats (a Unix time of 2026 is a float
+    with a spacing of about 0.24 microseconds).
+    """
+    return (parse_iso_datetime(text) - _EPOCH) / datetime.timedelta(seconds=1)
 
 
 def urllib_transport(url: str, timeout: float = 30.0) -> Response:
