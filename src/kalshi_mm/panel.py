@@ -57,6 +57,7 @@ __all__ = [
     "create_schema",
     "get_source",
     "loaded_markets",
+    "read_api_fields",
     "read_dataset",
     "schema_problem",
     "stored_release_times",
@@ -363,6 +364,27 @@ def read_dataset(conn: sqlite3.Connection) -> tuple[pd.DataFrame, pd.DataFrame, 
         "SELECT event, release_ts, series FROM events ORDER BY release_ts, event", conn
     ).astype({"event": _TEXT, "series": _TEXT, "release_ts": "float64"})
     return tape, markets, events
+
+
+def read_api_fields(conn: sqlite3.Connection) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The stored fields that :func:`read_dataset` leaves out, for the checks of the data.
+
+    ``(trades, markets)``: ``trades`` has ``market``, ``ts``, ``price``, ``size``, ``side``,
+    ``trade_id`` and ``endpoint`` (None where not stored), sorted by (``market``, ``ts``, ``seq``);
+    ``markets`` has ``market``, ``price_level_structure`` and ``price_ranges``, sorted by
+    ``market``. A database of an earlier schema lacks these columns: check :func:`schema_problem`
+    first.
+    """
+    trades = pd.read_sql_query(
+        "SELECT market, ts, price, size, side, trade_id, endpoint FROM trades"
+        " ORDER BY market, ts, seq",
+        conn,
+    ).astype({"market": _TEXT, "ts": "float64", "price": "float64", "size": "float64",
+              "side": "int8", "trade_id": object, "endpoint": object})
+    markets = pd.read_sql_query(
+        "SELECT market, price_level_structure, price_ranges FROM markets ORDER BY market", conn
+    ).astype({"market": _TEXT, "price_level_structure": object, "price_ranges": object})
+    return trades, markets
 
 
 # The markout panel. Every comparison of times is spelled out because the strict and the inclusive

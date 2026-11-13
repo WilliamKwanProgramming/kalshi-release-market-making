@@ -142,9 +142,22 @@ here; it needs the mid proxy.
   `taker_outcome_side` to 2026-05-06 and `is_block_trade` to 2026-05-29, and the trade pages said
   `taker_side` "will not be removed before May 14, 2026". No authentication is used: no key is read,
   stored or sent; the headers are `User-Agent` and `Accept`.
+- Tick. The backtest quotes on a grid of 0.01 USD. Kalshi's Market object has `price_level_structure`
+  and `price_ranges` (each range with `start`, `end` and `step`, in USD), and some structures allow
+  steps of 0.005, 0.002, 0.001 or 0.0001 USD (https://docs.kalshi.com/getting_started/subpenny_pricing,
+  read on 2026-11-13). Both fields are stored per market. `scripts/run_real.py` counts, per series and
+  in total, the kept trades whose `yes_price_dollars` is not a whole multiple of 0.01 USD (tolerance
+  1e-9 USD) and the markets by `price_level_structure`, and prints and writes the counts (table K9,
+  `summary.json`). Not checked: whether a trade's price lies on its own market's `price_ranges`,
+  whether the grid changed during a market's life (only the grid of the record read at the fetch is
+  stored), and what a sub-cent grid would do to the quotes and fills of the backtest.
+- Both trade endpoints. `scripts/run_real.py` also counts the kept trades whose `trade_id` both trade
+  endpoints returned and the groups of kept trades alike in everything but `trade_id` across the two
+  endpoints. Such groups are kept, so if Kalshi gave one trade two ids, it is counted twice; the
+  count bounds how many trades that can be.
 - The documentation does not say: whether `min_ts` and `max_ts` include their bound; the order of
   trades within a page; the rate limit without credentials; whether a trade near the cutoff has the
-  same `trade_id` on both endpoints; which filters of `/historical/markets` can be combined ("Filters
+  same `trade_id` on both endpoints (counted, above); which filters of `/historical/markets` can be combined ("Filters
   are mutually exclusive"). `/markets` answers are cached briefly, so a market that has just settled
   could show an empty `result`, and then has no outcome in the data.
 - Terms. Kalshi's Developer Agreement (v1.1,

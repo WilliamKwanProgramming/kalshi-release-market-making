@@ -106,6 +106,9 @@ releases kept for P1 and the releases after the burn-in for P2. P3 is not labell
 2. The distribution of $T_e$ minus market close time is printed and read.
 3. The synthetic end-to-end test (`tests/test_pipeline.py`) passes on the machine that runs the
    analysis.
+4. The counts of kept trades off the 0.01 USD tick, of trade ids returned by both trade endpoints
+   and of groups of trades alike across the two endpoints are printed, by series, and read (table
+   K9); they are reported, not used to remove trades.
 
 ## Changes since the first commit
 

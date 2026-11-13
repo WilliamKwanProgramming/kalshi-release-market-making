@@ -3,7 +3,9 @@
 ``write_results`` writes, into one directory, ``summary.json`` (every number), ``p1_buckets.csv``,
 ``p2_releases.csv`` (per release: the sums over its markets, no trade-level data),
 ``p3_fits.csv`` (one row per refit of the recalibration) and ``tables.md``; ``DEVIATIONS.md`` as
-well when a setting differs from docs/protocol.md. Every table starts with
+well when a setting differs from docs/protocol.md. Given the checks of the data
+(``kalshi_mm.run_real.data_checks``), ``summary.json`` holds them under ``data_checks`` and
+``tables.md`` has a ninth table of them. Every table starts with
 ``### <letter><n>. <title> (<data label>)``, where the data label is "synthetic data"
 or "real data" from the source stored with the dataset and the letter follows from it (R for
 synthetic, K for real), so a table cannot be mistaken for the other kind; a synthetic result is
@@ -16,7 +18,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -256,8 +258,29 @@ def _p3_table(results: Results, prefix: str, label: str, boot: str) -> str:
     )
 
 
-def tables_markdown(results: Results, extra_deviations: Sequence[str] = ()) -> str:
-    """The tables of one run as Markdown blocks with the IDs ``<letter>1`` to ``<letter>8``.
+def _checks_table(checks: Mapping[str, Any], prefix: str, label: str) -> str:
+    rows = checks["by_series"]
+    header = ["Series", *next(iter(rows.values())).keys()]
+    body = [[name, *[f"{v:,}" for v in counts.values()]] for name, counts in rows.items()]
+    total = rows["all"]
+    return _block(
+        f"{prefix}9", "Checks of the data", label,
+        f"the backtest quotes on a {checks['tick_usd']:g} USD tick, and "
+        f"{total['off the 0.01 tick']:,} of the {total['trades kept']:,} kept trades are at "
+        f"prices off it (tolerance {checks['tolerance_usd']:g} USD); "
+        f"{total['trade_id from both endpoints']:,} kept trades have a trade_id that both trade "
+        f"endpoints returned, and {total['groups alike across endpoints']:,} groups of kept trades "
+        "differ only in trade_id and came from the two endpoints.",
+        _markdown(header, body),
+        "whether the trades off the tick or the groups alike across endpoints change a result; "
+        "the price grid of each market is counted in summary.json, not checked against its trades.",
+    )
+
+
+def tables_markdown(results: Results, extra_deviations: Sequence[str] = (),
+                    data_checks: Mapping[str, Any] | None = None) -> str:
+    """The tables of one run as Markdown blocks with the IDs ``<letter>1`` to ``<letter>8``, and
+    ``<letter>9`` with ``data_checks``.
 
     ``extra_deviations`` are departures from docs/protocol.md that are not settings (for
     example a run without the ``real-run`` tag); they are named in the sample table.
@@ -279,6 +302,8 @@ def tables_markdown(results: Results, extra_deviations: Sequence[str] = ()) -> s
     parts += _p1_tables(results, prefix, label, boot)
     parts += _p2_tables(results, prefix, label, boot)
     parts += [_p3_table(results, prefix, label, boot), family]
+    if data_checks is not None:
+        parts.append(_checks_table(data_checks, prefix, label))
     return "\n".join(parts)
 
 
@@ -297,12 +322,14 @@ def _jsonable(x: Any) -> Any:
 
 
 def write_results(
-    results: Results, out_dir: Path, *, extra_deviations: Sequence[str] = ()
+    results: Results, out_dir: Path, *, extra_deviations: Sequence[str] = (),
+    data_checks: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """Write the files of the module docstring into ``out_dir``; returns their names.
 
     ``extra_deviations`` are departures from docs/protocol.md that are not settings; they go to
-    ``DEVIATIONS.md`` and into the sample table, like the changed settings do.
+    ``DEVIATIONS.md`` and into the sample table, like the changed settings do. ``data_checks``
+    (properties of the data, not departures) go to ``summary.json`` and the ninth table.
     """
     label = data_label(results.source)
     out_dir = Path(out_dir)
@@ -324,6 +351,8 @@ def write_results(
         "p3": {k: v for k, v in results.p3.items() if k != "walk"},
         "family": results.family,
     }
+    if data_checks is not None:
+        summary["data_checks"] = data_checks
     (out_dir / "summary.json").write_text(
         json.dumps(_jsonable(summary), indent=2, sort_keys=True) + "\n"
     )
@@ -336,7 +365,7 @@ def write_results(
         .reset_index()
     )
     per_release.to_csv(out_dir / "p2_releases.csv", index=False)
-    (out_dir / "tables.md").write_text(tables_markdown(results, extra_deviations))
+    (out_dir / "tables.md").write_text(tables_markdown(results, extra_deviations, data_checks))
     names = ["summary.json", "p1_buckets.csv", "p2_releases.csv", "tables.md"]
     walk = results.p3["walk"]
     if walk is not None:
