@@ -115,6 +115,7 @@ def test_through_rule_by_hand():
     # the last valid proxy before the release is 0.50: -2 contracts valued at 0.50 USD
     assert r.marked_pnl == pytest.approx(cash - 2 * 0.50 - fees, abs=1e-12)
     assert r.quotes_live_share == 1.0
+    assert r.mean_spread == pytest.approx(0.06, abs=1e-12)  # bid 0.47 and ask 0.53 every interval
     assert (r.event, r.market, r.policy) == ("E", "M", "always_on")
 
 
@@ -123,7 +124,8 @@ def test_the_settled_pnl_depends_on_the_outcome_only_through_the_inventory():
     assert lost.gross == pytest.approx(1.96, abs=1e-9)  # the short position expires worthless
     assert lost.pnl == pytest.approx(1.96 - 0.1399, abs=1e-9)
     assert won.pnl - lost.pnl == pytest.approx(-2.0, abs=1e-9)  # q (y1 - y0), q = -2
-    for field in ("fees", "fills", "contracts", "inventory_end", "marked_pnl", "quotes_live_share"):
+    for field in ("fees", "fills", "contracts", "inventory_end", "marked_pnl", "quotes_live_share",
+                  "mean_spread"):
         assert getattr(lost, field) == getattr(won, field)  # nothing else sees the outcome
 
 
@@ -283,10 +285,27 @@ def test_the_position_limit_closes_the_side_at_the_next_refresh():
     r = run(rows, params=small)
     assert (r.fills, r.contracts, r.inventory_end) == (4, 33.0, 25.0)
     assert r.quotes_live_share == 1.0  # one side is always open
+    # both sides are quoted at 9640, 9700 and 9760 only (bid 0.47, ask 0.53): the refreshes with
+    # one side closed are left out of the mean spread
+    assert r.mean_spread == pytest.approx(0.06, abs=1e-12)
     assert 25.0 <= small.max_position + small.size
     mirrored = [(ts, -s, 1.0 - p, c) for ts, s, p, c in rows]  # the same tape upside down
     r = run(mirrored, params=small)
     assert (r.fills, r.contracts, r.inventory_end) == (4, 33.0, -25.0)
+
+
+def test_mean_spread_is_ask_minus_bid_of_the_quotes_averaged_over_the_refreshes_with_both_sides(
+        monkeypatch):
+    seen = record_quotes(monkeypatch)
+    r = run(S1, "release_aware", premiums=PREMIUMS)
+    both = [ask - bid for *_, bid, ask in seen if bid == bid and ask == ask]
+    assert len(both) == 6 == len(seen)
+    assert r.mean_spread == pytest.approx(sum(both) / 6, abs=1e-12)
+    # by hand at a mid of 0.50 with no inventory: the premium is 4 * 0.25 * 0.08 at 6 minutes to
+    # the release (bucket (5,15]) and 4 * 0.25 * 0.10 in the five refreshes of the bucket (0,5];
+    # the spread is the tick-rounded 2 * (0.0252494 + premium): 0.22 and 0.26
+    assert r.mean_spread == pytest.approx((0.22 + 5 * 0.26) / 6, abs=1e-12)
+    assert run(S1).mean_spread == pytest.approx(0.06, abs=1e-12)  # always_on, no premium
 
 
 def test_the_latency_can_take_the_inventory_past_the_limit_plus_one_size():
@@ -418,8 +437,10 @@ def test_a_market_without_a_valid_proxy_gets_no_fills():
         r = run(only_buys, policy, premiums=PREMIUMS)
         assert (r.fills, r.contracts, r.inventory_end, r.fees) == (0, 0.0, 0.0, 0.0)
         assert (r.pnl, r.gross, r.marked_pnl, r.quotes_live_share) == (0.0, 0.0, 0.0, 0.0)
+        assert math.isnan(r.mean_spread)  # no quote, no spread
     empty = run([(9500.0, BUY, 0.5, 1.0)], "always_on", release=9000.0)  # all after the release
     assert (empty.fills, empty.quotes_live_share) == (0, 0.0)
+    assert math.isnan(empty.mean_spread)
 
 
 def test_an_empty_tape_gives_an_empty_result():
@@ -427,14 +448,17 @@ def test_an_empty_tape_gives_an_empty_result():
                         RELEASE, 1, "release_aware", PREMIUMS, 0.1, HAND)
     assert (r.fills, r.contracts, r.pnl, r.gross, r.marked_pnl, r.quotes_live_share) == (
         0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    assert math.isnan(r.mean_spread)
 
 
 def test_no_quote_when_the_proxy_is_outside_the_range():
     low = [(9500.0, BUY, 0.03, 5.0), (9510.0, SELL, 0.01, 5.0)]  # proxy 0.02
     assert run(low).quotes_live_share == 0.0
+    assert math.isnan(run(low).mean_spread)
     # a buy at 0.99 at 9650 moves the proxy to 0.50, seen from the decision at 9700 on
     moved = low + [(9650.0, BUY, 0.99, 5.0)]
     assert run(moved).quotes_live_share == pytest.approx(5 / 6)
+    assert run(moved).mean_spread == pytest.approx(0.06, abs=1e-12)  # the five quoted refreshes
 
 
 def test_the_range_of_the_proxy_is_inclusive_at_the_edges():
@@ -561,7 +585,7 @@ def test_backtest_arguments_are_checked():
 def test_event_result_has_the_fields_of_the_brief():
     names = [f.name for f in fields(EventResult)]
     assert names == ["event", "market", "policy", "pnl", "gross", "fees", "fills", "contracts",
-                     "inventory_end", "marked_pnl", "quotes_live_share"]
+                     "inventory_end", "marked_pnl", "quotes_live_share", "mean_spread"]
 
 
 def test_backtest_grid_is_backtest_market_on_a_prepared_grid():
@@ -883,8 +907,8 @@ def test_the_engine_does_not_read_the_latent_columns():
 
 # ------------------------------------------------------------------------------- walk_forward
 WF_COLUMNS = ["event", "market", "policy", "pnl", "gross", "fees", "fills", "contracts",
-              "inventory_end", "marked_pnl", "quotes_live_share", "evaluated", "release_ts",
-              "series"]
+              "inventory_end", "marked_pnl", "quotes_live_share", "mean_spread", "evaluated",
+              "release_ts", "series"]
 
 
 def window_vols(tape, market, release, params):
@@ -1072,7 +1096,7 @@ def test_the_outcomes_of_other_events_do_not_matter():
     # every other event keeps its fills and fees, and its settled P&L moves by q (y_new - y_old)
     other = got["event"] != target
     for field in ("fills", "contracts", "fees", "inventory_end", "marked_pnl",
-                  "quotes_live_share"):
+                  "quotes_live_share", "mean_spread"):
         np.testing.assert_allclose(got.loc[other, field], base.loc[other, field], atol=1e-12)
     sign = 1.0 - 2.0 * world.markets.set_index("market").loc[got.loc[other, "market"],
                                                              "outcome"].to_numpy()

@@ -69,8 +69,10 @@ class EventResult:
     ``pnl`` is the settled net P&L ``cash + q y - fees``, ``gross`` is ``pnl + fees``, ``fills`` is
     the number of fills, ``contracts`` the contracts filled on both sides, ``inventory_end`` the
     net position at the release, ``marked_pnl`` the P&L with the final inventory valued at the last
-    valid mid proxy instead of the outcome, and ``quotes_live_share`` the share of refresh
-    intervals in which at least one side was quoted.
+    valid mid proxy instead of the outcome, ``quotes_live_share`` the share of refresh
+    intervals in which at least one side was quoted, and ``mean_spread`` the mean of ask minus
+    bid, in USD per contract, over the refresh intervals in which both sides were quoted (NaN when
+    there was none).
     """
 
     event: str
@@ -84,6 +86,7 @@ class EventResult:
     inventory_end: float
     marked_pnl: float
     quotes_live_share: float
+    mean_spread: float
 
 
 @dataclass(frozen=True)
@@ -218,6 +221,8 @@ def backtest_grid(
     cash = 0.0
     known_inventory = 0.0
     live = 0
+    spread_sum = 0.0
+    spread_n = 0
     fill_contracts: list[float] = []
     fill_prices: list[float] = []
     for j in range(grid.n_intervals):
@@ -227,6 +232,9 @@ def backtest_grid(
             continue
         bid, ask = quote
         live += 1
+        if bid == bid and ask == ask:  # both sides are quoted (a side at the limit is NaN)
+            spread_sum += ask - bid
+            spread_n += 1
         first, split, stop = firsts[j], splits[j], stops[j]
         if first == stop:
             known_inventory = inventory
@@ -274,6 +282,7 @@ def backtest_grid(
         inventory_end=inventory,
         marked_pnl=cash + held_value - fees,
         quotes_live_share=live / grid.n_intervals,
+        mean_spread=spread_sum / spread_n if spread_n else math.nan,
     )
 
 
@@ -467,6 +476,7 @@ def walk_forward(
             )
     columns = [
         "event", "market", "policy", "pnl", "gross", "fees", "fills", "contracts",
-        "inventory_end", "marked_pnl", "quotes_live_share", "evaluated", "release_ts", "series",
+        "inventory_end", "marked_pnl", "quotes_live_share", "mean_spread", "evaluated",
+        "release_ts", "series",
     ]
     return pd.DataFrame(rows, columns=columns)
