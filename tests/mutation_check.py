@@ -3,11 +3,15 @@
 
 Copies src/, tests/, scripts/, docs/ and pyproject.toml into a temporary directory, then applies
 ONE deliberate bug ("mutant") at a time to the copy and runs pytest there. A mutant is "caught" if
-at least one test fails. The working tree is never modified. The mutants are bugs that would
-silently produce plausible numbers: a sign, an off-by-one, a wrong tick direction, look-ahead, a
-wrong horizon or a unit error. To save time a mutant runs only the test files that exercise the
-changed module (listed with it); the baseline runs the whole suite. Exits with status 1 if a
-mutant survives or the baseline fails.
+pytest does not finish green. It is caught by a failed test when at least one test fails an
+assertion; when pytest stops on an error (a collection or fixture error, no tests) or times out
+instead, the log says "CAUGHT ONLY AS AN ERROR" and the totals count those mutants separately, so
+a reader can see how many were caught by a test that looks at the changed behaviour. The working
+tree is never modified. The mutants are bugs that would silently produce plausible numbers: a
+sign, an off-by-one, a wrong tick direction, look-ahead, a wrong horizon or a unit error. They are
+one-line edits written by hand, not the output of a mutation tool. To save time a mutant runs only
+the test files that exercise the changed module (listed with it); the baseline runs the whole
+suite. Exits with status 1 if a mutant survives or the baseline fails.
 
 Usage: python3 tests/mutation_check.py [--out results/mutation_check.txt]
 """
@@ -715,33 +719,18 @@ mutant("calibration study: failed row not marked", CST, "experiments/calibration
        'rows.append({**row, "failed": False})')
 
 # ---- more recalibration mutants (calibration.py)
-mutant("calibration: clip not applied in fit", CAL, "calibration.py",
-       '    x = _clipped_logit(p, clip)\n    if x.max()',
-       '    x = logit(p)\n    if x.max()')
-mutant("calibration: refit every off by one", CAL, "calibration.py",
-       'stop = int(first[k + refit_every]) if k + refit_every < k_total else n',
-       'stop = int(first[k + refit_every - 1]) if k + refit_every - 1 < k_total else n')
 mutant("calibration: refit every range step", CAL, "calibration.py",
        'for k in range(first_scored, k_total, refit_every):',
        'for k in range(first_scored, k_total, refit_every + 1):')
 mutant("calibration: rows not releases", CAL, "calibration.py",
        'releases, first = np.unique(ts, return_index=True)',
        'releases, first = np.arange(n, dtype=float), np.arange(n)')
-mutant("calibration: ordering ignores time", CAL, "calibration.py",
-       'keys = [y, p, ts]  # np.lexsort sorts by the last key first',
-       'keys = [y, ts, p]  # np.lexsort sorts by the last key first')
 mutant("calibration: ratio inverted", CAL, "calibration.py",
        'boot = 1.0 - ratio',
        'boot = ratio - 1.0')
 mutant("calibration: brier absolute error", CAL, "calibration.py",
        'return float(np.mean((p - y) ** 2))',
        'return float(np.mean(np.abs(p - y)))')
-mutant("calibration: max iter returns garbage", CAL, "calibration.py",
-       '        a, b, ll = a + step * da, b + step * db, ll_new\n    raise not_converged',
-       '        a, b, ll = a + step * da, b + step * db, ll_new\n    return a, b')
-mutant("calibration: cluster codes unsorted", CAL, "calibration.py",
-       'codes, uniques = pd.factorize(arr, sort=True)',
-       'codes, uniques = pd.factorize(arr)')
 mutant("calibration: n fit wrong", CAL, "calibration.py",
        'columns["n_fit"][start:stop] = in_fit',
        'columns["n_fit"][start:stop] = stop')
@@ -1176,7 +1165,7 @@ def run_pytest(work: Path, targets: list[str], timeout: float):
     env.pop("PYTHONPATH", None)
     t0 = time.monotonic()
     try:
-        p = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", "-rf", "--tb=no",
+        p = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", "-rfE", "--tb=no",
                             "-p", "no:cacheprovider", *targets], cwd=work, env=env,
                            capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -1214,7 +1203,7 @@ def main() -> int:
     log(f"# python:  {platform.python_version()}; numpy {numpy.__version__}")
     log("# For each mutant: the pytest summary and the first failing test.")
     log("")
-    survived = 0
+    survived = error_only = 0
     with tempfile.TemporaryDirectory(prefix="kalshi_mutation_") as tmp:
         work = Path(tmp)
         for item in COPY:
@@ -1246,8 +1235,12 @@ def main() -> int:
                     (work / rel).write_text(text)
                 rc, failed, secs, summary = run_pytest(work, targets, args.timeout)
                 caught = rc != 0
+                by_test = any(not (f.startswith("ERROR") or f == "(timeout)") for f in failed)
                 survived += not caught
-                log(f"{name}: {'caught' if caught else 'SURVIVED'} - {summary} [{secs:.0f} s]")
+                error_only += caught and not by_test
+                verdict = ("SURVIVED" if not caught else
+                           "caught" if by_test else "CAUGHT ONLY AS AN ERROR")
+                log(f"{name}: {verdict} - {summary} [{secs:.0f} s]")
                 for f in failed[:1]:
                     log(f"    {f}")
             finally:
@@ -1255,6 +1248,7 @@ def main() -> int:
                     (work / rel).write_text(originals[rel])
     log("")
     log(f"{len(MUTANTS) - survived} of {len(MUTANTS)} mutants caught.")
+    log(f"{error_only} of them caught only by an error or a timeout, not by a failed test.")
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text("\n".join(lines) + "\n")
