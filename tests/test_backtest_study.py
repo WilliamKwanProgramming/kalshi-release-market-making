@@ -618,14 +618,6 @@ def test_the_matched_row_averages_the_buckets_over_the_720_decisions_of_the_defa
         assert got.loc["matched", column] != pytest.approx(got.loc["pooled", column], rel=1e-6)
 
 
-def test_a_window_of_a_whole_number_of_refreshes_has_no_decision_too_many():
-    # 0.55 hours with a refresh every minute are 33 decisions, but 0.55 * 3600 / 60 is
-    # 33.00000000000001 in floating point
-    minutes = decision_minutes(QuoteParams(window_hours=0.55, refresh_s=60.0))
-    assert len(minutes) == 33
-    assert minutes[0] == pytest.approx(33.0) and minutes[-1] == pytest.approx(1.0)
-
-
 def test_the_premiums_known_at_an_event_use_only_events_released_before_its_window():
     quote = SMALL.quote
     world = generate_world(replace(SMALL.world, pi1=0.2), 2)

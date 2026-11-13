@@ -1031,6 +1031,17 @@ def test_walk_forward_accepts_any_iterable_of_policies():
     pd.testing.assert_frame_equal(a, b)
 
 
+def test_a_premium_policy_gets_its_premiums_whether_it_runs_alone_or_with_the_others():
+    world, params = small_world(17, n_events=24)
+    together = walk_forward(world.tape, world.markets, world.events, POLICIES, params)
+    for policy in ("pooled_premium", "flat_matched", "release_aware"):
+        alone = walk_forward(world.tape, world.markets, world.events, (policy,), params)
+        assert_rows_equal(alone, together[together["policy"] == policy])
+    flat = together[together["policy"] == "flat_matched"]
+    assert flat["fills"].sum() > 100
+    assert not flat["pnl"].equals(together.loc[together["policy"] == "always_on", "pnl"])
+
+
 def test_events_of_two_markets_run_each_market_on_its_own():
     world, params = small_world(16, n_events=30)
     tape, markets, events = merge_pairs(world)

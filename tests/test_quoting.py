@@ -551,6 +551,14 @@ def test_decision_minutes_counts_the_refreshes_back_from_the_window_start():
     assert np.all(np.diff(default) == -1.0)
 
 
+def test_a_window_of_a_whole_number_of_refreshes_has_no_decision_too_many():
+    # 0.55 hours with a refresh every minute are 33 decisions, but 0.55 * 3600 / 60 is
+    # 33.00000000000001 in floating point
+    minutes = decision_minutes(QuoteParams(window_hours=0.55, refresh_s=60.0))
+    assert len(minutes) == 33
+    assert minutes[0] == pytest.approx(33.0) and minutes[-1] == pytest.approx(1.0)
+
+
 def test_matched_premium_is_the_mean_of_the_premium_of_the_bucket_of_each_decision():
     by_bucket = (0.10, 0.08, 0.06, 0.04, 0.03, 0.02, 0.01)
     # buckets 0, 1, 4 and 6

@@ -1270,7 +1270,7 @@ mutant("quoting: decision minutes in hours",
        "np.arange(n, dtype=np.float64)) / 60.0",
        "np.arange(n, dtype=np.float64)) / 3600.0")
 mutant("quoting: decision minutes without the guard against rounding error",
-       f"{QUOTE} {STUDY}", "quoting.py",
+       QUOTE, "quoting.py",
        "n = max(1, math.ceil(window / params.refresh_s - 1e-9))",
        "n = max(1, math.ceil(window / params.refresh_s))")
 mutant("quoting: matched premium is the sum over the decisions",
@@ -1298,7 +1298,7 @@ mutant("quoting: the scale of the flat premium is not validated",
        "\"vol_lookback_s\", \"horizon_s\", \"flat_scale\"):",
        "\"vol_lookback_s\", \"horizon_s\"):")
 mutant("backtest: flat_matched is not a policy that needs premiums",
-       f"{BACKTEST} {STUDY}", "backtest.py",
+       BACKTEST, "backtest.py",
        "_PREMIUM_POLICIES = (\"pooled_premium\", \"flat_matched\", \"release_aware\")",
        "_PREMIUM_POLICIES = (\"pooled_premium\", \"release_aware\")")
 mutant("backtest: the premiums are estimated without the decision minutes",
