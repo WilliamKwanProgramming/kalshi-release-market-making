@@ -37,6 +37,7 @@ __all__ = [
     "bucket_means",
     "per_event_sums",
     "release_effect",
+    "scaled_adverse_selection",
     "trade_markouts",
 ]
 
@@ -136,6 +137,33 @@ def trade_markouts(
         realized_spread=sgn * (price[keep] - after),
         settlement_markout=sgn * (price[keep] - outcome[keep]),
     )
+
+
+def scaled_adverse_selection(
+    markouts: pd.DataFrame,
+    *,
+    min_mid: float = 0.03,
+    max_mid: float = 0.97,
+    column: str = "adverse_selection",
+) -> pd.Series:
+    """``column / (4 m (1 - m))`` with ``m = mid_before``: a markout at a price of 50 cents.
+
+    A markout in USD scales with ``m (1 - m)``: the same move of the log-odds shifts a price near
+    one half by more than a price near 0 or 1, and prices move away from one half as a release
+    comes closer. Dividing by ``4 m (1 - m)`` (which is 1 at ``m = 0.5``) removes that level
+    effect, the same unit in which the quoting premium is estimated (docs/model.md section 6). The
+    value is NaN where ``mid_before`` is undefined or outside ``[min_mid, max_mid]`` (the range in
+    which the quoting rules quote at all), and where ``column`` is NaN. The index is that of
+    ``markouts``.
+    """
+    if not 0.0 <= min_mid < max_mid <= 1.0:
+        raise ValueError("need 0 <= min_mid < max_mid <= 1")
+    m = markouts["mid_before"].to_numpy(dtype=np.float64)
+    inside = (m >= min_mid) & (m <= max_mid)  # a NaN is outside
+    values = markouts[column].to_numpy(dtype=np.float64)
+    out = np.full(len(markouts), np.nan)
+    np.divide(values, 4.0 * m * (1.0 - m), out=out, where=inside)
+    return pd.Series(out, index=markouts.index, name=f"{column}_scaled")
 
 
 def per_event_sums(markouts: pd.DataFrame, mask: ArrayLike, column: str) -> pd.DataFrame:

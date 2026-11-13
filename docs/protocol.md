@@ -52,8 +52,10 @@ adjusted with Holm's method at the 5% level.
 pooled difference $D = \overline{\mathrm{AS}}_{\text{near}} - \overline{\mathrm{AS}}_{\text{quiet}}$ of
 the 5-minute adverse selection in cents per contract, near $=(0,30]$ minutes to release and quiet
 $= (360,\infty)$. The hypothesis is $D > 0$. The ratio is reported only if the quiet mean exceeds
-0.2 cent. Also reported, not tested: each bucket, each series, the 1- and 15-minute horizons, and
-the settlement markout.
+0.2 cent. Also reported, not tested: each bucket, each series, the 1- and 15-minute horizons, the
+settlement markout, $D$ of the markout divided by $4\hat m(1-\hat m)$ (cents per contract at a
+price of 50 cents; trades whose mid proxy is outside $[0.03, 0.97]$ are left out), and $D$ with the
+near window $(5, 30]$ minutes.
 
 **P2. Time-conditional pricing of adverse selection.** The walk-forward backtest of
 `docs/model.md` (sections 6 and 7) over the last 12 hours before $T_e$, with $\gamma = 0.002$ per
@@ -103,3 +105,7 @@ All were made before any real-data result existed.
   analysis code was written after this file; events with the same $T_e$ are merged into one
   release; the proxy rule for markets kept, the P3 price time, the burn-in of 20 releases and the
   refit schedule are stated explicitly (they are the values in `docs/model.md`).
+- 2026-11-13, after the synthetic world was built: the scaled $D$ and the $(5, 30]$ window were added
+  to the quantities reported for P1, because on the synthetic world the surge of the trade rate and
+  the level of the price change $D$ without a change of the informed share (`docs/model.md`
+  section 5). The tested quantity and its hypothesis did not change.

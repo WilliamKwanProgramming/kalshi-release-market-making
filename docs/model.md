@@ -11,7 +11,10 @@ time $T_e$. A market on the event is a binary contract: it pays USD 1 if the sta
 rules is true when the number is announced and USD 0 otherwise. Write $y \in \{0, 1\}$ for the
 outcome and $p_t$ for the price of the YES side. One event has several markets on real Kalshi
 (one per strike); the synthetic worlds have one binary market per event. Statistics always treat
-the event as the unit, because all markets of one release share the same news.
+the event as the unit, because all markets of one release share the same news. Events of different
+series with the same $T_e$ (CPI and CPI year-over-year, payrolls and the unemployment rate) share
+the same news too, so the analysis merges them into one release before it computes anything; the
+word "release" below means such a merged event, and the bootstrap resamples releases.
 
 Minutes to release is $\tau = 60\,(T_e - t)$. $T_e$ comes from a release calendar supplied by the
 user, never from the market's close time. Trades at or after $T_e$ are dropped.
@@ -98,6 +101,16 @@ Bucket means are trade-weighted over all trades in the bucket. The release effec
 the difference $D = \overline{\mathrm{AS}}_{\text{near}} - \overline{\mathrm{AS}}_{\text{quiet}}$ and, only
 when the quiet mean exceeds 0.2 cent, the ratio $R = \overline{\mathrm{AS}}_{\text{near}} /
 \overline{\mathrm{AS}}_{\text{quiet}}$.
+
+$D$ is a difference of markouts measured on the tape. It is what a maker feels per contract, but
+it is not an estimate of the informed share $\pi$: the markout counts every trade in the next $h$,
+so a surge of the trade rate raises it with no change of $\pi$; it scales with $m(1-m)$, which
+falls as prices move to 0 or 1 before a release; and the tape-only proxy is fresher where trades
+are frequent. On the synthetic world the surge alone gives about half of the planted $D$ (the
+recovery study reports it). Two further quantities are therefore reported next to $D$: the markout
+divided by $4\hat m(1-\hat m)$, in cents per contract at a price of 50 cents, for trades whose
+$\hat m$ is in $[0.03, 0.97]$; and $D$ with the near window $(h, 30]$ minutes, which no
+truncation of the horizon touches.
 
 ## 6. Quoting
 

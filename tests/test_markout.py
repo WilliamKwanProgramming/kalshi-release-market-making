@@ -21,6 +21,7 @@ from kalshi_mm.markout import (
     bucket_means,
     per_event_sums,
     release_effect,
+    scaled_adverse_selection,
     trade_markouts,
 )
 from kalshi_mm.stats import cluster_weights, percentile_interval, ratio_of_sums
@@ -696,3 +697,46 @@ def test_a_world_with_no_release_profile_has_no_effect_once_the_price_level_is_r
     assert out["D_ci"][0] <= 0.0 <= out["D_ci"][1]
     assert abs(out["D"]) < 2.0 * interval_se(out)
     assert out["n_near"] > 500 and out["n_events"] == 200
+
+
+# ------------------------------------------------------------------- scaled adverse selection
+def test_scaled_adverse_selection_by_hand():
+    """Divided by 4 m (1 - m) where mid_before is in [0.03, 0.97] (both ends included), else NaN;
+    the index and the other columns are untouched."""
+    frame = pd.DataFrame(
+        {
+            "mid_before": [0.5, 0.25, 0.03, 0.97, 0.0299, 0.9701, NAN, 0.9],
+            "adverse_selection": [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, NAN],
+        },
+        index=[10, 11, 12, 13, 14, 15, 16, 17],
+    )
+    out = scaled_adverse_selection(frame)
+    assert list(out.index) == [10, 11, 12, 13, 14, 15, 16, 17]
+    assert out.name == "adverse_selection_scaled"
+    expected = [0.01, 0.01 / 0.75, 0.01 / (4 * 0.03 * 0.97), 0.01 / (4 * 0.03 * 0.97),
+                NAN, NAN, NAN, NAN]
+    np.testing.assert_allclose(out.to_numpy(), expected, rtol=1e-12, equal_nan=True)
+    assert list(frame.columns) == ["mid_before", "adverse_selection"]  # not modified
+
+
+def test_scaled_adverse_selection_range_and_column_arguments():
+    frame = pd.DataFrame({"mid_before": [0.1, 0.5, 0.9], "eff_half_spread": [0.04, 0.02, 0.04]})
+    wide = scaled_adverse_selection(frame, min_mid=0.0, max_mid=1.0, column="eff_half_spread")
+    np.testing.assert_allclose(wide.to_numpy(), [0.04 / 0.36, 0.02, 0.04 / 0.36], rtol=1e-12)
+    narrow = scaled_adverse_selection(frame, min_mid=0.2, max_mid=0.8, column="eff_half_spread")
+    assert narrow.isna().tolist() == [True, False, True] and narrow.iloc[1] == pytest.approx(0.02)
+    for lo, hi in ((0.5, 0.5), (0.6, 0.4), (-0.1, 0.9), (0.1, 1.1)):
+        with pytest.raises(ValueError, match="min_mid"):
+            scaled_adverse_selection(frame, min_mid=lo, max_mid=hi, column="eff_half_spread")
+
+
+def test_scaled_adverse_selection_on_a_world_undoes_the_scale(small):
+    m = trade_markouts(small.tape, small.events, small.markets)
+    scaled = scaled_adverse_selection(m)
+    ok = scaled.notna()
+    assert ok.sum() > 0.5 * len(m) and (scaled[~ok].isna()).all()
+    back = scaled[ok] * 4.0 * m.loc[ok, "mid_before"] * (1.0 - m.loc[ok, "mid_before"])
+    np.testing.assert_allclose(back, m.loc[ok, "adverse_selection"], rtol=1e-12, atol=1e-15)
+    # NaN exactly where the markout is undefined or the price is outside the range
+    outside = ~m["mid_before"].between(0.03, 0.97) | m["adverse_selection"].isna()
+    assert (~ok).to_numpy().tolist() == outside.to_numpy().tolist()
