@@ -337,8 +337,8 @@ Details and every parameter: [docs/model.md](docs/model.md).
   the last buy and the last sell, which is stale where trading is thin, and the quoted spread is
   never seen.
 * **The release effect D is not the informed share.** It is a difference of tape markouts. A surge
-  of the trade rate and the level of the price change it without a change of the informed share
-  (tables M); the scaled version removes the price level only.
+  of the trade rate, the level of the price and the staleness of the mid proxy change it without a
+  change of the informed share (tables M1, M3, M4); the scaled version removes the price level only.
 * **The backtest does not trade against anyone.** A quote fills when a print goes strictly through
   it, at the quote; there is no queue, no market impact and no reaction of other makers. Profit
   figures are therefore about the rule, not about what an account would earn.
