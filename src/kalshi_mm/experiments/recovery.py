@@ -35,8 +35,10 @@ bootstrap interval and one-sided p-value of ``release_effect`` (``B`` resamples 
 replication) and a naive interval that treats trades as independent. Coverage is that of the
 population value of the same world and estimand, which is itself estimated from 3,000 events.
 
-The design asks for 200 replications; at 200 the run takes about as long as the 6-minute budget,
-so ``REPS`` is 100 (the rule was: cut to 100, never below, and say so in the table notes).
+The design asks for 200 replications. On a shared machine with two CPUs and a load of 2 to 3, 200
+replications took 302 s of CPU time and 438 s of wall time and 100 took 152 s and 195 s, against a
+budget of 360 s, so ``REPS`` is 100 (the rule was: cut to 100, never below, and say so in the table
+notes). ``--reps 200`` restores the design; the first 100 replications are the same in both runs.
 
 Usage::
 
@@ -535,12 +537,11 @@ def _table_planted(res: RecoveryResults) -> list[str]:
         "### M1. Adverse selection by minutes to release, planted world: tape proxy, oracle and "
         "price impact (synthetic data)",
         "",
-        f"Reading: cents per contract over {n} events, trades with a defined proxy; the tape proxy "
-        f"minus the oracle is {_signed(near.bias_cents)} near (0, 30] and "
-        f"{_signed(quiet.bias_cents)} in the quiet window, so D is "
+        f"Reading: cents per contract over {n} events, informed share at the mean time to release "
+        f"of the bucket; the tape proxy minus the oracle is {_signed(near.bias_cents)} near "
+        f"(0, 30] and {_signed(quiet.bias_cents)} in the quiet window, so D is "
         f"{_signed(diff.tape_as_cents)} on the tape, {_signed(diff.oracle_as_cents)} by the "
-        f"oracle and {_signed(diff.impact_cents)} by the price impact; the informed share is the "
-        "planted one at the bucket's mean time to release.",
+        f"oracle and {_signed(diff.impact_cents)} by the price impact.",
         "",
         *_bucket_lines(res, ["planted"]),
         "",
@@ -594,8 +595,8 @@ def _table_effects(res: RecoveryResults) -> list[str]:
     lines = [
         "### M3. Population release effect by world and estimand (synthetic data)",
         "",
-        f"Reading: D = near minus quiet (360, inf) in cents per contract over {n} events per world "
-        f"with the 95% cluster-bootstrap interval; in this world {_effect_sentence(res)}.",
+        f"Reading: D = near minus quiet in cents per contract over {n} events per world, with its "
+        f"95% cluster-bootstrap interval; {_effect_sentence(res)}.",
         "",
         "| world | estimand | D | 95% interval | near mean | quiet mean |",
         "|---|---|---|---|---|---|",
@@ -684,12 +685,12 @@ def _table_coverage(res: RecoveryResults) -> list[str]:
         "### M5. Coverage of the population D by the cluster-bootstrap and the naive interval "
         "(synthetic data)",
         "",
-        f"Reading: percent of {reps} replications per world whose 95% interval contains the "
-        f"population value of its own world and estimand, cluster bootstrap (B = {d['B']} inside "
-        f"each replication) / naive trade-level interval; at n = {ref} the cluster interval covers "
+        f"Reading: cluster bootstrap / naive trade-level interval, percent of {reps} replications "
+        f"whose 95% interval contains the population value of its own world and estimand (B = "
+        f"{d['B']}); at n = {ref} the cluster interval covers "
         f"{_share(at['cover_cluster'].min())}% to {_share(at['cover_cluster'].max())}% and the "
-        f"naive one {_share(at['cover_naive'].min())}% to {_share(at['cover_naive'].max())}%, "
-        f"Monte Carlo standard error at most {se:.1f} points.{_cut_note(res)}",
+        f"naive one {_share(at['cover_naive'].min())}% to {_share(at['cover_naive'].max())}% "
+        f"(Monte Carlo standard error at most {se:.1f} points).{_cut_note(res)}",
         "",
         *_grid_lines(res, cell),
         "",
@@ -739,11 +740,10 @@ def _table_power(res: RecoveryResults) -> list[str]:
         "### M7. Share of replications with one-sided p below 0.05, by world and number of events "
         "(synthetic data)",
         "",
-        f"Reading: percent of {d['reps']} replications per world with the cluster-bootstrap "
-        f"one-sided p below 0.05 (B = {d['B']}; Monte Carlo standard error in brackets); the test "
-        "asks whether D > 0, so where the population D is positive a rejection is correct and the "
-        "rate is power, where it is zero the rate is the size, and where it is negative the rate "
-        f"is below the size.{_cut_note(res)}",
+        f"Reading: percent of {d['reps']} replications with the one-sided cluster-bootstrap p "
+        f"below 0.05 (B = {d['B']}; Monte Carlo standard error in brackets); the test asks "
+        "whether D > 0, so the rate is power where the population D is positive, the size where "
+        f"it is zero and below the size where it is negative.{_cut_note(res)}",
         "",
         *lines,
         "",
@@ -773,10 +773,10 @@ def _table_sample(res: RecoveryResults) -> list[str]:
     return [
         "### M8. Number of events for 80% power in the planted world (synthetic data)",
         "",
-        "Reading: smallest size tried with a rejection rate above 80% in the planted world; each "
-        f"rate comes from {d['reps']} replications, so its Monte Carlo standard error is up to "
-        f"{100.0 * np.sqrt(0.25 / d['reps']):.1f} points, and the size to plan with is for an "
-        f"effect like the planted one.{_cut_note(res)}",
+        "Reading: smallest size tried with a rejection rate above 80% in the planted world, each "
+        f"rate from {d['reps']} replications (Monte Carlo standard error up to "
+        f"{100.0 * np.sqrt(0.25 / d['reps']):.1f} points); it applies to an effect like the "
+        f"planted one.{_cut_note(res)}",
         "",
         *lines,
         "",
