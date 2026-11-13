@@ -1,11 +1,11 @@
 experiment: rehearsal
 command: python -m kalshi_mm.experiments.rehearsal --out results/rehearsal
 seeds: 20261113
-git commit: 4c5acb8f422425e5794b6610edfd908e6e8fbe5e (working tree clean)
+git commit: 622b59d1b4ccdec148a1e88d5f37f6353092e5e8 (working tree clean)
 python 3.12.3, numpy 2.5.4, scipy 1.18.1, pandas 3.1.1
 machine: Linux x86_64, 2 logical CPUs, load average at start 1.02
-started: 2026-11-13T11:43:09Z
-runtime: 9.5 s
+started: 2026-11-13T15:01:34Z
+runtime: 11.8 s
 world: 200 events of 30.0 hours, seed 20261113, default WorldParams otherwise
 count, events: 200
 count, releases: 200

@@ -65,21 +65,21 @@ Does not show: a test: the slices are listed in docs/protocol.md, but only the 5
 
 ### R5. P2: the five quoting policies (synthetic data)
 
-Reading: mean over the evaluated releases of the sum over each release's markets; net P&L is settled at the outcome and after maker fees.
+Reading: mean over the evaluated releases of the sum over each release's markets; net P&L is settled at the outcome and after maker fees; the premium at the fills is the mean over all the contracts filled in the evaluated releases of the premium per unit of 4m(1 - m) of the quote that was hit, in cents.
 
-| Policy | Net P&L (USD) | Gross (USD) | Fees (USD) | Fills | Contracts | Net cents per contract filled | Share of intervals quoted |
-|---|---|---|---|---|---|---|---|
-| always_on | -10.855 | -9.368 | 1.487 | 85.8 | 541.0 | -2.01 | 0.71 |
-| pull_only | -10.370 | -8.893 | 1.477 | 85.0 | 536.6 | -1.93 | 0.71 |
-| pooled_premium | -6.919 | -5.773 | 1.146 | 65.8 | 413.2 | -1.67 | 0.71 |
-| flat_matched | -7.096 | -5.932 | 1.164 | 66.8 | 420.4 | -1.69 | 0.71 |
-| release_aware | -5.868 | -4.759 | 1.110 | 61.5 | 388.3 | -1.51 | 0.71 |
+| Policy | Net P&L (USD) | Gross (USD) | Fees (USD) | Fills | Contracts | Net cents per contract filled | Share of intervals quoted | Premium at the fills, cents per unit of 4m(1 - m) |
+|---|---|---|---|---|---|---|---|---|
+| always_on | -10.855 | -9.368 | 1.487 | 85.8 | 541.0 | -2.01 | 0.71 | 0.00 |
+| pull_only | -10.370 | -8.893 | 1.477 | 85.0 | 536.6 | -1.93 | 0.71 | 0.00 |
+| pooled_premium | -6.919 | -5.773 | 1.146 | 65.8 | 413.2 | -1.67 | 0.71 | 1.68 |
+| flat_matched | -7.096 | -5.932 | 1.164 | 66.8 | 420.4 | -1.69 | 0.71 | 1.58 |
+| release_aware | -5.868 | -4.759 | 1.110 | 61.5 | 388.3 | -1.51 | 0.71 | 2.43 |
 
 Does not show: queue position, market impact and the rest of the book: a fill is a strict trade-through of a tape that does not react to the quotes.
 
 ### R6. P2: net P&L difference per release (USD) (synthetic data)
 
-Reading: release_aware minus flat_matched is 1.227 USD per release [0.548, 1.963] over 180 evaluated releases (cluster bootstrap over releases, 10,000 replications, seed 20261113). flat_matched quotes one flat premium equal to the average of the bucket premiums over the quoting window, so the difference is the effect of when a premium is applied and not of its average size.
+Reading: release_aware minus flat_matched is 1.227 USD per release [0.548, 1.963] over 180 evaluated releases (cluster bootstrap over releases, 10,000 replications, seed 20261113). flat_matched quotes one flat premium equal to the average of the bucket premiums over the clock of the quoting window. That is the same premium averaged over the clock and not the same premium at the fills, where the quotes are hit: the table above has the premium at the fills of each policy, and one row below scales the flat premium to the premium at the fills of release_aware.
 
 | Difference | Mean (USD) | 95% interval | One-sided p | Releases |
 |---|---|---|---|---|
@@ -95,11 +95,12 @@ Reading: release_aware minus flat_matched is 1.227 USD per release [0.548, 1.963
 | pull_only minus release_aware | -4.501 | [-6.095, -2.943] | 1.0000 | 180 |
 | release_aware minus flat_matched, touch fill rule | 1.352 | [0.853, 1.907] | 0.0001 | 180 |
 | release_aware minus flat_matched, maker fee coefficient 0 | 1.173 | [0.499, 1.901] | 0.0001 | 180 |
+| release_aware minus flat_matched, flat premium scaled to the premium at the fills of release_aware (F = 1.53) | -0.420 | [-0.966, 0.126] | 0.9320 | 180 |
 | release_aware minus flat_matched, first half | 0.978 | [0.161, 1.881] | 0.0082 | 90 |
 | release_aware minus flat_matched, second half | 1.477 | [0.415, 2.695] | 0.0015 | 90 |
 | release_aware minus flat_matched, series SYN | 1.227 | [0.548, 1.963] | 0.0001 | 180 |
 
-Does not show: which policy earns money: a difference can be positive while both policies lose; and the pairs with pooled_premium: the pooled premium is a flat premium of another size, so the sign of release_aware minus pooled_premium follows the level of the pooled premium.
+Does not show: which policy earns money: a difference can be positive while both policies lose; whether the primary difference comes from when the premium is applied or from the premium at the fills: read it next to the row with the flat premium scaled to the premium at the fills; and the pairs with pooled_premium: the pooled premium is a flat premium of another size, so the sign of release_aware minus pooled_premium follows the level of the pooled premium.
 
 ### R7. P3: walk-forward recalibration (synthetic data)
 
@@ -130,4 +131,4 @@ Reading: P1, P2 and P3 are one family; a test is supported only if its Holm-adju
 | P2 | 0.0001 | 0.0003 | supported |
 | P3 | 0.6544 | 0.6544 | not supported |
 
-Does not show: the size of any effect: see the intervals in the tables above; and the sign of the pooled comparison: it follows the level of the pooled premium.
+Does not show: the size of any effect: see the intervals in the tables above; that a supported P2 shows informed trading or that a premium by minutes to the release pays: on the synthetic worlds the primary difference is positive with no informed share (table B1 of the README) and not positive at an equal premium at the fills (table B10); and the sign of the pooled comparison: it follows the level of the pooled premium.

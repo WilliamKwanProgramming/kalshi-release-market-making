@@ -272,6 +272,7 @@
       "marked_pnl": -16.185113055555558,
       "live_share": 0.9365763888888889,
       "spread": 0.0301749153147228,
+      "fill_premium": 0.0,
       "pnl_mc_se": 0.5106046295555643
     },
     "null_world:pull_only": {
@@ -284,6 +285,7 @@
       "marked_pnl": -15.847034833333334,
       "live_share": 0.9312793209876542,
       "spread": 0.030175803607729652,
+      "fill_premium": 0.0,
       "pnl_mc_se": 0.5219362566545287
     },
     "null_world:pooled_premium": {
@@ -296,6 +298,7 @@
       "marked_pnl": -8.266902499999999,
       "live_share": 0.9365763888888889,
       "spread": 0.055800855438583506,
+      "fill_premium": 0.01797578162753311,
       "pnl_mc_se": 0.32362184269388994
     },
     "null_world:flat_matched": {
@@ -308,6 +311,7 @@
       "marked_pnl": -10.462389722222222,
       "live_share": 0.9365763888888889,
       "spread": 0.04809137281826381,
+      "fill_premium": 0.012511102923133935,
       "pnl_mc_se": 0.328231571720553
     },
     "null_world:release_aware": {
@@ -320,6 +324,7 @@
       "marked_pnl": -9.223547833333333,
       "live_share": 0.9365763888888889,
       "spread": 0.04726814227004299,
+      "fill_premium": 0.016023572016741216,
       "pnl_mc_se": 0.35259202013107566
     },
     "planted_world:always_on": {
@@ -332,6 +337,7 @@
       "marked_pnl": -20.809934833333333,
       "live_share": 0.9169174382716049,
       "spread": 0.030187331020604936,
+      "fill_premium": 0.0,
       "pnl_mc_se": 0.5385894344696512
     },
     "planted_world:pull_only": {
@@ -344,6 +350,7 @@
       "marked_pnl": -20.32187944444444,
       "live_share": 0.915537037037037,
       "spread": 0.030187499401982544,
+      "fill_premium": 0.0,
       "pnl_mc_se": 0.5335851471221782
     },
     "planted_world:pooled_premium": {
@@ -356,6 +363,7 @@
       "marked_pnl": -9.234334166666667,
       "live_share": 0.9169174382716049,
       "spread": 0.06993799643163744,
+      "fill_premium": 0.02804052621026412,
       "pnl_mc_se": 0.2621817548560637
     },
     "planted_world:flat_matched": {
@@ -368,6 +376,7 @@
       "marked_pnl": -13.248792722222223,
       "live_share": 0.9169174382716049,
       "spread": 0.053689176302883904,
+      "fill_premium": 0.016470229151892033,
       "pnl_mc_se": 0.2927871442043764
     },
     "planted_world:release_aware": {
@@ -380,6 +389,7 @@
       "marked_pnl": -10.583430500000002,
       "live_share": 0.9169174382716049,
       "spread": 0.04969709431293023,
+      "fill_premium": 0.025389712306468925,
       "pnl_mc_se": 0.20862183923076974
     }
   },
@@ -996,5 +1006,39 @@
       "premium_flat": 0.03291680246794741,
       "premium_pooled": 0.027992204278164408
     }
-  ]
+  ],
+  "fill_matched": {
+    "null_world": {
+      "n_datasets": 10,
+      "mean": -0.1673824444444441,
+      "mc_se": 0.0756014706409023,
+      "min": -0.593438333333333,
+      "max": 0.05531777777777806,
+      "below_zero": 3,
+      "above_zero": 0,
+      "half_width": 0.4722680965277776,
+      "flat_scale": 1.280836948473358,
+      "flat_scale_min": 1.2585177770866887,
+      "flat_scale_max": 1.2972339850939463,
+      "fill_aware": 0.016023572016741216,
+      "fill_flat_base": 0.012511102923133935,
+      "fill_flat": 0.016023150570816793
+    },
+    "planted_world": {
+      "n_datasets": 10,
+      "mean": -0.3826959444444443,
+      "mc_se": 0.11603407290893972,
+      "min": -1.0373111111111109,
+      "max": 0.38051666666666845,
+      "below_zero": 1,
+      "above_zero": 0,
+      "half_width": 0.8574907166666664,
+      "flat_scale": 1.5414697109023312,
+      "flat_scale_min": 1.4975548996189754,
+      "flat_scale_max": 1.5895241454474716,
+      "fill_aware": 0.025389712306468925,
+      "fill_flat_base": 0.016470229151892033,
+      "fill_flat": 0.025389492458422806
+    }
+  }
 }

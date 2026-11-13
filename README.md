@@ -17,15 +17,13 @@ A Python library that measures adverse selection in Kalshi's release-day contrac
 | Mutation check of the test suite | yes (437 hand-written mutants, all caught) | n/a | n/a | n/a |
 | Release calendar (BLS, BEA, Federal Reserve) | no | no | no | not run: supplied by the user |
 
-Model: [docs/model.md](docs/model.md). Protocol for the real data: [docs/protocol.md](docs/protocol.md). Data
-loading: [docs/data.md](docs/data.md).
+Model: [docs/model.md](docs/model.md). Protocol for the real data: [docs/protocol.md](docs/protocol.md). Data loading: [docs/data.md](docs/data.md).
 
 ## Layout
 
 * `src/kalshi_mm/`: the library (world, tape, markout, quoting, backtest, calibration, stats, the
-  three protocol tests, the loader and the Kalshi API client).
-* `src/kalshi_mm/experiments/`: one module per results directory (`recovery`, `backtest_study`,
-  `calibration_study`, `rehearsal`).
+  three protocol tests, the loader and the Kalshi API client); `experiments/` has one module per
+  results directory.
 * `tests/`: unit, property, end-to-end and look-ahead tests, and `mutation_check.py`.
 * `scripts/`: `reproduce.sh`, `make_tables.py`, `check_readme_numbers.py`, `fetch_kalshi.py` and
   `run_real.py`; `constraints/lowest.txt` pins the lowest supported versions for one CI job.
@@ -133,22 +131,22 @@ Does not show: coverage of the true D; the population value comes from 3000 even
 
 ### Quoting
 
-Five rules quote the same synthetic markets: always on, pulled in the last minutes, a premium for adverse selection pooled over all minutes to the release (`pooled_premium`), a flat premium with the average size of the bucket premiums over the quoting window (`flat_matched`), and a premium estimated by bucket of minutes to the release (`release_aware`). The comparison the protocol tests is `release_aware` against `flat_matched`: both quote the same premium on average per unit of 4m(1 - m), so the difference is when the premium is applied and not how large it is. The quoted spread in USD also depends on the price, and B2 gives it: `release_aware` quotes 4.73 cents on average against 4.81 for `flat_matched` in the null world, and 4.97 against 5.37 in the planted world, so it does not earn more by quoting wider. At that size `release_aware` earns more than `flat_matched` in both worlds (B1), the null world included, whose buckets differ too (the trade-rate surge and the price level), so the table does not show that the planted informed share is what makes a premium by bucket pay.
+Five rules quote the same synthetic markets: always on, pulled in the last minutes, a premium for adverse selection pooled over all minutes to the release (`pooled_premium`), a flat premium equal to the average of the bucket premiums over the clock of the quoting window (`flat_matched`), and a premium estimated by bucket of minutes to the release (`release_aware`). The comparison the protocol tests is `release_aware` against `flat_matched`. At that level `release_aware` earns more than `flat_matched` in both worlds (B1), the null world included, whose buckets differ too (the trade-rate surge and the price level). The two premiums are equal on average over the clock and not where the quotes are hit. `release_aware` quotes no wider on average (4.73 cents against 4.81 for `flat_matched` in the null world, and 4.97 against 5.37 in the planted world), but per unit of 4m(1 - m) it quotes more premium at its fills: `release_aware` quotes 1.60 cents at its fills against 1.25 for `flat_matched` in the null world and 2.54 against 1.65 in the planted world (B2). With the flat premium scaled to the premium at the fills of `release_aware`, `release_aware` earns less in both worlds, 0.17 and 0.38 USD per event (B10, exploratory). So the tables show neither that the planted informed share makes a premium by bucket pay, nor that its timing pays at an equal premium at the fills; which level to hold equal is a choice, and the premium at the fills is partly an outcome of the schedule.
 
-That pair replaced a first one, `release_aware` against `pooled_premium`, after the first results and an independent review, and before any real data. The pooled premium is an average over every trade of every earlier event, larger than the average of the bucket premiums over the quoting window (2.80 and 1.65 cents in the planted world), and every policy loses money (B2), so the policy that quotes wider loses less. With 12 hours of trading `release_aware` earns less than `pooled_premium` and with 30 hours more, while the matched premium hardly moves (B8); and against `flat_matched` it earns more until that premium is scaled by about 1.5 and less beyond (B9). B8 and B9 are exploratory.
+That pair replaced a first one, `release_aware` against `pooled_premium`, after the first results and an independent review, and before any real data. The pooled premium is an average over every trade of every earlier event, larger than the average of the bucket premiums over the quoting window (2.80 and 1.65 cents in the planted world), and every policy loses money (B2), so the policy that quotes wider loses less. With 12 hours of trading `release_aware` earns less than `pooled_premium` and with 30 hours more, while the matched premium hardly moves (B8); and against `flat_matched` it earns more until that premium is scaled by about 1.5 and less beyond (B9). A second independent review found that the matched pair equalises the premium over the clock and not at the fills; the primary pair and its test were kept as they had been fixed, and B10 was added. B8 to B10 are exploratory.
 
 <!-- table:B1 -->
 
 ### B1. `release_aware` minus `flat_matched`, net P&L per event (synthetic data)
 
-Reading: In the null world `release_aware` earned 1.22 USD per event more than `flat_matched` (mean of 10 datasets, range +0.88 to +1.44; the 95% interval lies below zero in 0 of 10 datasets and above zero in 10). In the planted world `release_aware` earned 2.83 USD per event more than `flat_matched` (mean of 10 datasets, range +2.05 to +3.80; the 95% interval lies below zero in 0 of 10 datasets and above zero in 10). `flat_matched` quotes one flat premium equal to the average of the bucket premiums over the quoting window, so the difference is the effect of when a premium is applied and not of its average size (both premiums are per unit of 4m(1 - m); the quoted spreads in USD also depend on the price, see B2). Intervals are percentile intervals of a cluster bootstrap over events with 10,000 replications.
+Reading: In the null world `release_aware` earned 1.22 USD per event more than `flat_matched` (mean of 10 datasets, range +0.88 to +1.44; the 95% interval lies below zero in 0 of 10 datasets and above zero in 10). In the planted world `release_aware` earned 2.83 USD per event more than `flat_matched` (mean of 10 datasets, range +2.05 to +3.80; the 95% interval lies below zero in 0 of 10 datasets and above zero in 10). `flat_matched` quotes one flat premium equal to the average of the bucket premiums over the clock of the quoting window (both premiums are per unit of 4m(1 - m); the quoted spreads in USD also depend on the price, see B2). That is the same premium averaged over the clock and not the same premium where the quotes are hit: B2 gives the premium at the fills of each policy and B10 repeats the comparison at an equal premium at the fills. Intervals are percentile intervals of a cluster bootstrap over events with 10,000 replications.
 
 | World | Mean difference, USD per event (MC SE over datasets) | Range over datasets | 95% interval below zero | 95% interval above zero | 95% interval contains zero | Mean interval half-width, USD |
 |---|---|---|---|---|---|---|
 | null | +1.22 (0.05) | +0.88 to +1.44 | 0 | 10 | 0 | 0.56 |
 | planted | +2.83 (0.14) | +2.05 to +3.80 | 0 | 10 | 0 | 0.95 |
 
-Does not show: whether the planted informed share is what makes the bucket premiums useful: the null world's buckets also differ, because of the trade-rate surge and the price level; and whether either policy earns or loses money on real Kalshi markets: the tape, the fill rule and the quote parameters are assumptions.
+Does not show: whether the planted informed share is what makes the bucket premiums useful: the null world's buckets also differ, because of the trade-rate surge and the price level; whether the difference comes from when the premium is applied or from the larger premium that `release_aware` has at its fills (B10); and whether either policy earns or loses money on real Kalshi markets: the tape, the fill rule and the quote parameters are assumptions.
 
 <!-- /table:B1 -->
 
@@ -156,22 +154,22 @@ Does not show: whether the planted informed share is what makes the bucket premi
 
 ### B2. The five policies, means over the datasets of each world (synthetic data)
 
-Reading: Net P&L per event is negative in 10 of 10 world and policy cells; the highest is `pooled_premium` in the null world (-8.19 USD) and the lowest `always_on` in the planted world (-21.64 USD). In the null world the mean quoted spread, in cents, is `release_aware` 4.73, `flat_matched` 4.81, `pooled_premium` 5.58. In the planted world the mean quoted spread, in cents, is `release_aware` 4.97, `flat_matched` 5.37, `pooled_premium` 6.99.
+Reading: Net P&L per event is negative in 10 of 10 world and policy cells; the highest is `pooled_premium` in the null world (-8.19 USD) and the lowest `always_on` in the planted world (-21.64 USD). In the null world the mean quoted spread, in cents, is `release_aware` 4.73, `flat_matched` 4.81, `pooled_premium` 5.58. In the planted world the mean quoted spread, in cents, is `release_aware` 4.97, `flat_matched` 5.37, `pooled_premium` 6.99. In the null world the premium per unit of 4m(1 - m) at the fills, over the contracts filled, in cents, is `release_aware` 1.60, `flat_matched` 1.25, `pooled_premium` 1.80. In the planted world the premium per unit of 4m(1 - m) at the fills, over the contracts filled, in cents, is `release_aware` 2.54, `flat_matched` 1.65, `pooled_premium` 2.80.
 
-| World | Policy | Net P&L per event, USD (MC SE over datasets) | Fees per event, USD | Fills per event | Contracts per event | Net cents per contract | Marked P&L per event, USD | Share of intervals with a quote | Mean quoted spread, cents |
-|---|---|---|---|---|---|---|---|---|---|
-| null | `always_on` | -16.12 (0.51) | 2.93 | 143.4 | 896.7 | -1.80 | -16.19 | 0.937 | 3.02 |
-| null | `pull_only` | -15.69 (0.52) | 2.86 | 139.1 | 871.1 | -1.80 | -15.85 | 0.931 | 3.02 |
-| null | `pooled_premium` | -8.19 (0.32) | 2.12 | 102.0 | 637.1 | -1.29 | -8.27 | 0.937 | 5.58 |
-| null | `flat_matched` | -10.32 (0.33) | 2.37 | 115.1 | 719.2 | -1.44 | -10.46 | 0.937 | 4.81 |
-| null | `release_aware` | -9.10 (0.35) | 2.20 | 104.6 | 657.0 | -1.39 | -9.22 | 0.937 | 4.73 |
-| planted | `always_on` | -21.64 (0.54) | 2.76 | 139.8 | 875.4 | -2.47 | -20.81 | 0.917 | 3.02 |
-| planted | `pull_only` | -21.13 (0.53) | 2.74 | 138.3 | 866.9 | -2.44 | -20.32 | 0.916 | 3.02 |
-| planted | `pooled_premium` | -9.92 (0.26) | 1.78 | 91.0 | 566.9 | -1.75 | -9.23 | 0.917 | 6.99 |
-| planted | `flat_matched` | -13.97 (0.29) | 2.18 | 111.6 | 696.8 | -2.00 | -13.25 | 0.917 | 5.37 |
-| planted | `release_aware` | -11.14 (0.21) | 2.09 | 103.3 | 649.3 | -1.72 | -10.58 | 0.917 | 4.97 |
+| World | Policy | Net P&L per event, USD (MC SE over datasets) | Fees per event, USD | Fills per event | Contracts per event | Net cents per contract | Marked P&L per event, USD | Share of intervals with a quote | Mean quoted spread, cents | Premium at the fills, cents per unit of 4m(1 - m) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| null | `always_on` | -16.12 (0.51) | 2.93 | 143.4 | 896.7 | -1.80 | -16.19 | 0.937 | 3.02 | 0.00 |
+| null | `pull_only` | -15.69 (0.52) | 2.86 | 139.1 | 871.1 | -1.80 | -15.85 | 0.931 | 3.02 | 0.00 |
+| null | `pooled_premium` | -8.19 (0.32) | 2.12 | 102.0 | 637.1 | -1.29 | -8.27 | 0.937 | 5.58 | 1.80 |
+| null | `flat_matched` | -10.32 (0.33) | 2.37 | 115.1 | 719.2 | -1.44 | -10.46 | 0.937 | 4.81 | 1.25 |
+| null | `release_aware` | -9.10 (0.35) | 2.20 | 104.6 | 657.0 | -1.39 | -9.22 | 0.937 | 4.73 | 1.60 |
+| planted | `always_on` | -21.64 (0.54) | 2.76 | 139.8 | 875.4 | -2.47 | -20.81 | 0.917 | 3.02 | 0.00 |
+| planted | `pull_only` | -21.13 (0.53) | 2.74 | 138.3 | 866.9 | -2.44 | -20.32 | 0.916 | 3.02 | 0.00 |
+| planted | `pooled_premium` | -9.92 (0.26) | 1.78 | 91.0 | 566.9 | -1.75 | -9.23 | 0.917 | 6.99 | 2.80 |
+| planted | `flat_matched` | -13.97 (0.29) | 2.18 | 111.6 | 696.8 | -2.00 | -13.25 | 0.917 | 5.37 | 1.65 |
+| planted | `release_aware` | -11.14 (0.21) | 2.09 | 103.3 | 649.3 | -1.72 | -10.58 | 0.917 | 4.97 | 2.54 |
 
-Does not show: which part of a loss is adverse selection: the table has no fill-level decomposition; the spread is that of the quotes posted, ask minus bid at the refreshes with both sides quoted, not the width at which fills happened.
+Does not show: which part of a loss is adverse selection: the table has no decomposition of the losses; the spread is that of the quotes posted, ask minus bid at the refreshes with both sides quoted, not the width at which fills happened; and the premium at the fills is per unit of 4m(1 - m), so in USD it also depends on the price.
 
 <!-- /table:B2 -->
 
@@ -186,7 +184,7 @@ Reading: Exploratory: added after the first results because B1 and the rehearsal
 | 12 | 10 | +2.83 (0.14) | 0 | 10 | -1.22 (0.12) | 9 | 0 | 2.80 | 1.65 | 8.95 | 0.88 |
 | 30 | 10 | +1.71 (0.10) | 0 | 10 | +1.37 (0.11) | 0 | 10 | 1.77 | 1.64 | 8.37 | 0.86 |
 
-Does not show: whether either difference follows the level of the premium only (B9 is the test of that), and anything about real markets: the hours of trading are those of the synthetic world.
+Does not show: what either difference is made of: B9 and B10 change the level of the flat premium and describe what happens, they do not test it; and anything about real markets: the hours of trading are those of the synthetic world.
 
 <!-- /table:B8 -->
 
@@ -194,7 +192,7 @@ Does not show: whether either difference follows the level of the premium only (
 
 ### B9. Exploratory: `release_aware` minus `flat_matched` by the scale of the flat premium, planted world (synthetic data)
 
-Reading: Exploratory: added after an independent review showed that the first primary pair followed the level of the pooled premium. The flat premium of `flat_matched` is multiplied by F and F = 1 is the primary comparison. At F = 1 `release_aware` earned 2.83 USD per event more than `flat_matched` (mean of 10 datasets; the 95% interval lies below zero in 0 of 10 datasets and above zero in 10). At the largest F = 2 `release_aware` earned 2.50 USD per event less than `flat_matched` (mean of 10 datasets; the 95% interval lies below zero in 10 of 10 datasets and above zero in 0). The mean difference changes sign at F = 1.47, by linear interpolation between the means at F = 1.25 and F = 1.5; this describes the grid and is not an estimate with an interval. The mean pooled premium at the end is 2.80 cents and the mean matched premium 1.65 cents, a ratio of 1.70, so at the end of a dataset `pooled_premium` quotes the premium that `flat_matched` quotes at F = 1.70. Every policy loses money in the planted world (B2), so a wider quote loses less. Intervals are percentile intervals of a cluster bootstrap over events with 10,000 replications.
+Reading: Exploratory: added after an independent review showed that the first primary pair followed the level of the pooled premium. The flat premium of `flat_matched` is multiplied by F and F = 1 is the primary comparison. At F = 1 `release_aware` earned 2.83 USD per event more than `flat_matched` (mean of 10 datasets; the 95% interval lies below zero in 0 of 10 datasets and above zero in 10). At the largest F = 2 `release_aware` earned 2.50 USD per event less than `flat_matched` (mean of 10 datasets; the 95% interval lies below zero in 10 of 10 datasets and above zero in 0). The mean difference changes sign at F = 1.47, by linear interpolation between the means at F = 1.25 and F = 1.5; this describes the grid and is not an estimate with an interval. The mean pooled premium at the end is 2.80 cents and the mean matched premium 1.65 cents, a ratio of 1.70, so at the end of a dataset `pooled_premium` quotes the premium that `flat_matched` quotes at F = 1.70. Every policy loses money in the planted world (B2), so a wider quote loses less. B10 gives the scale at which the two policies quote the same premium at their fills. Intervals are percentile intervals of a cluster bootstrap over events with 10,000 replications.
 
 | Scale F of the flat premium | Flat premium quoted at the end, cents | `release_aware` minus `flat_matched`: mean difference, USD per event (MC SE over datasets) | Range over datasets | 95% interval below zero | 95% interval above zero |
 |---|---|---|---|---|---|
@@ -209,6 +207,21 @@ Reading: Exploratory: added after an independent review showed that the first pr
 Does not show: that either policy earns money on real markets, and that the planted informed share is what makes the bucket premiums useful at F = 1: the null world has buckets that differ too (see the null row of B1).
 
 <!-- /table:B9 -->
+
+<!-- table:B10 -->
+
+### B10. Exploratory: `release_aware` minus `flat_matched` at an equal premium at the fills (synthetic data)
+
+Reading: Exploratory: added after a second independent review showed that `flat_matched` is matched to `release_aware` on the average of the premium over the clock and not where the quotes are hit (B1, B2). In the null world `release_aware` quotes 1.60 cents per unit of 4m(1 - m) at its fills against 1.25 for `flat_matched` (+28%). With the flat premium scaled by F_eq = 1.28 both quote about the same premium at their fills (1.60 and 1.60 cents) and `release_aware` earned 0.17 USD per event less than `flat_matched` (mean of 10 datasets; the 95% interval lies below zero in 3 of 10 datasets and above zero in 0). In the planted world `release_aware` quotes 2.54 cents per unit of 4m(1 - m) at its fills against 1.65 for `flat_matched` (+54%). With the flat premium scaled by F_eq = 1.54 both quote about the same premium at their fills (2.54 and 2.54 cents) and `release_aware` earned 0.38 USD per event less than `flat_matched` (mean of 10 datasets; the 95% interval lies below zero in 1 of 10 datasets and above zero in 0). F_eq is the premium per unit of 4m(1 - m) at the fills of `release_aware` divided by that of `flat_matched`, from one run of each; `flat_matched` is then run again with its flat premium multiplied by F_eq. Intervals are percentile intervals of a cluster bootstrap over events with 10,000 replications.
+
+| World | Scale F_eq of the flat premium, mean (range over datasets) | Premium at the fills of `release_aware`, cents | Premium at the fills of `flat_matched` at F = 1, cents | Premium at the fills of `flat_matched` at F_eq, cents | `release_aware` minus `flat_matched` at F_eq: mean difference, USD per event (MC SE over datasets) | Range over datasets | 95% interval below zero | 95% interval above zero |
+|---|---|---|---|---|---|---|---|---|
+| null | 1.28 (1.26 to 1.30) | 1.60 | 1.25 | 1.60 | -0.17 (0.08) | -0.59 to +0.06 | 3 | 0 |
+| planted | 1.54 (1.50 to 1.59) | 2.54 | 1.65 | 2.54 | -0.38 (0.12) | -1.04 to +0.38 | 1 | 0 |
+
+Does not show: which level is the right one to hold fixed: the average over the clock is fixed in advance and is not what the P&L responds to, and the premium at the fills is what it responds to but is partly an outcome of the schedule, because a policy is filled less where it quotes more premium; that F_eq is known beforehand: it is estimated from the same run as the difference, and the intervals treat it as given; and anything about real markets.
+
+<!-- /table:B10 -->
 
 ### Recalibration
 
@@ -245,7 +258,7 @@ Does not show: whether real Kalshi prices have a favourite-longshot slope, or on
 
 ### The whole pipeline on one synthetic world
 
-The rehearsal writes a world of 200 events (30 hours of trading before each release) into SQLite, reads it back and runs the same protocol steps as the real-data runner. It shows what the output looks like and that the steps fit together; it is one world and one seed. P2 comes out supported in R8, as the primary comparison does in both worlds of B1, so a supported P2 on real data would not by itself show informed trading. The detail of P2 and of the secondary comparisons is in `results/rehearsal/tables.md`.
+The rehearsal writes a world of 200 events (30 hours of trading before each release) into SQLite, reads it back and runs the same protocol steps as the real-data runner. It shows what the output looks like and that the steps fit together; it is one world and one seed. P2 comes out supported in R8, as the primary comparison does in both worlds of B1, so a supported P2 on real data would not by itself show informed trading, nor that a premium by minutes to the release pays at an equal premium at the fills (B10). The detail of P2 and of the secondary comparisons is in `results/rehearsal/tables.md`.
 
 <!-- table:R2 -->
 
@@ -279,7 +292,7 @@ Reading: P1, P2 and P3 are one family; a test is supported only if its Holm-adju
 | P2 | 0.0001 | 0.0003 | supported |
 | P3 | 0.6544 | 0.6544 | not supported |
 
-Does not show: the size of any effect: see the intervals in the tables above; and the sign of the pooled comparison: it follows the level of the pooled premium.
+Does not show: the size of any effect: see the intervals in the tables above; that a supported P2 shows informed trading or that a premium by minutes to the release pays: on the synthetic worlds the primary difference is positive with no informed share (table B1 of the README) and not positive at an equal premium at the fills (table B10); and the sign of the pooled comparison: it follows the level of the pooled premium.
 
 <!-- /table:R8 -->
 
@@ -291,16 +304,16 @@ Does not show: the size of any effect: see the intervals in the tables above; an
     python3 tests/mutation_check.py --out results/mutation_check.txt
     python3 scripts/check_readme_numbers.py
 
-`scripts/reproduce.sh` writes `results/MANIFEST.txt` (commands, seeds, commit, versions, wall and
-CPU time); every results directory also has its own manifest. Nothing in `results/` is typed by
-hand, and CI fails if a table in this README differs from `results/*/tables.md`.
+`scripts/reproduce.sh` writes `results/MANIFEST.txt` (commands, seeds, commit, versions, time);
+every results directory has its own manifest too. Nothing in `results/` is typed by hand, and CI
+fails if a table in this README differs from `results/*/tables.md`.
 
 The real-data run is a separate, one-time procedure with its own checks
 ([docs/protocol.md](docs/protocol.md), [docs/data.md](docs/data.md)). It needs a release calendar
 that has been checked by hand against the official calendars, and Kalshi's Developer Agreement may
 restrict storing data from its API ([docs/data.md](docs/data.md) quotes it): read it first.
 
-    git tag real-run && git push origin real-run   # before any data are fetched; freezes the code
+    git tag -a real-run -m "before the fetch" && git push origin real-run   # freezes the code
     python3 scripts/fetch_kalshi.py --dry-run      # lists what would be fetched, requests no trade
     python3 scripts/fetch_kalshi.py                # public API to data/kalshi.sqlite (git-ignored)
     python3 scripts/run_real.py --db data/kalshi.sqlite
@@ -310,26 +323,19 @@ restrict storing data from its API ([docs/data.md](docs/data.md) quotes it): rea
 * **World.** The price of a binary contract is a logistic function of a log-odds diffusion with the
   drift that makes the price a martingale. Each trade moves the log-odds by an amount that depends
   on the informed share of the order flow, which rises towards the release (Glosten and Milgrom
-  1985); the trade rate surges at the release. Other makers quote at a fixed margin around the
-  fair price.
-* **Mid proxy.** The data are trades only, so the mid is the average of the last buy print and the
-  last sell print when both are recent.
-* **Markouts.** Effective half-spread, adverse selection at 5 minutes (cut at the release),
-  realized spread and settlement markout, by minutes to the release. The release effect D is the
-  mean adverse selection within 30 minutes of the release minus the mean over 360 minutes or more
-  before it.
-* **Quoting.** Avellaneda and Stoikov (2008) reservation price and spread, with the premium for
-  adverse selection estimated from earlier releases: one pooled number, one flat number with the
-  average size of the bucket premiums, or one per bucket of minutes to the release. Five policies:
-  always on, pulled in the last minutes, pooled premium, matched flat premium, release-aware
-  premium.
-* **Fills and fees.** A print strictly beyond a quote fills it at the quote; maker fees follow
-  Kalshi's schedule; inventory is held to resolution.
-* **Inference.** Bootstrap over releases (events with the same release time are one release), a
-  Holm correction over the three tested quantities, one-sided p-values as the share of bootstrap
-  replications at or below zero.
-* **Calibration.** Logistic recalibration of the mid proxy 24 hours before the release, fitted
-  walk-forward, scored by the Brier skill against the raw proxy.
+  1985); the trade rate surges at the release. Other makers quote at a fixed margin.
+* **Measures.** The data are trades only, so the mid is the average of the last buy print and the
+  last sell print when both are recent. Adverse selection is the 5-minute markout (cut at the
+  release) by minutes to the release; the release effect D is its mean within 30 minutes of the
+  release minus its mean 360 minutes or more before it.
+* **Quoting.** Avellaneda and Stoikov (2008) reservation price and spread, with a premium for
+  adverse selection estimated from earlier releases: pooled, flat (the average of the bucket
+  premiums over the clock) or by bucket of minutes to the release. A print strictly beyond a quote
+  fills it at the quote; maker fees follow Kalshi's schedule; inventory is held to resolution.
+* **Inference.** Bootstrap over releases (events with the same release time are one release), Holm
+  over the three tested quantities, one-sided p-values as the share of replications at or below
+  zero. Recalibration is logistic, on the mid proxy 24 hours before the release, fitted
+  walk-forward and scored by the Brier skill against the raw proxy.
 
 Details and every parameter: [docs/model.md](docs/model.md).
 
@@ -337,33 +343,33 @@ Details and every parameter: [docs/model.md](docs/model.md).
 
 * **Synthetic data only.** Every result above comes from a world that the generator builds, so a
   recovered effect shows that the estimator works in that world, not that Kalshi behaves like it.
-  The real-data run has a protocol ([docs/protocol.md](docs/protocol.md)) and has not been done;
-  nothing here is a statement about Kalshi.
-* **Trades only.** The public API gives trades, not the order book. The mid is a proxy built from
-  the last buy and the last sell, which is stale where trading is thin, and the quoted spread is
-  never seen.
+  The real-data run has a protocol ([docs/protocol.md](docs/protocol.md)) and has not been done.
+* **Trades only.** The public API gives trades, not the order book: the mid is a proxy from the
+  last buy and the last sell, stale where trading is thin, and the quoted spread is never seen.
 * **The release effect D is not the informed share.** It is a difference of tape markouts. A surge
   of the trade rate, the level of the price and the staleness of the mid proxy change it without a
   change of the informed share (tables M1, M3, M4); the scaled version removes the price level only.
 * **The backtest does not trade against anyone.** A quote fills when a print goes strictly through
-  it, at the quote, so it fills only after the price has moved through the quote; the touch rule,
-  which fills at equality, is the optimistic bound (table B5 in `results/backtest/tables.md`).
-  There is no queue, no market impact and no reaction of other makers, and the quote parameters
-  were fixed before the study and not tuned. Profit figures are therefore about the rule, not
-  about what an account would earn.
-* **A quoting comparison follows the width of the quotes.** A wider quote loses less, because
-  every policy loses money in the backtest (table B2). The pooled premium is wider on average than
+  it, at the quote; the touch rule, which fills at equality, is the optimistic bound (table B5 in
+  `results/backtest/tables.md`). There is no queue, no market impact and no reaction of other
+  makers, and the quote parameters were fixed before the study and not tuned. Profit figures are
+  therefore about the rule, not about what an account would earn.
+* **A quoting comparison follows the premium that is quoted.** A wider quote loses less, because
+  every policy loses money in the backtest (table B2). The pooled premium is larger on average than
   the bucket premiums, and the sign of `release_aware` against `pooled_premium` follows that
-  difference of size (table B8, exploratory); against a flat premium of the same average size
-  `release_aware` earns more in both worlds, and less once that premium is scaled by about 1.5
-  (tables B1 and B9, the latter exploratory). Nothing here shows that a release-aware premium
-  earns money, and a supported P2 would not show that the premium measures informed trading.
-* **Fees.** The maker fee follows the schedule that took effect on 7 July 2026 and is an
-  assumption for earlier trades.
+  difference (table B8, exploratory). `flat_matched` equals the bucket premiums on average over the
+  clock and not at the fills, where `release_aware` quotes 28% (null world) and 54% (planted world)
+  more premium; at an equal premium at the fills `release_aware` earns less in both worlds (table
+  B10, exploratory). Nothing here shows that a release-aware premium earns money, and a supported
+  P2 would not show that the premium measures informed trading.
+* **P2 is expected to be exploratory on real data.** The protocol labels a test exploratory when
+  fewer than 100 releases enter it (P2 counts those after a burn-in of 20), and P2 also when more
+  than 5% of the kept trades are off the 0.01 USD tick. The range holds about 100 scheduled
+  releases, so P1 is expected at the threshold and P2 below it ([protocol](docs/protocol.md)).
+* **Fees.** The maker fee is the schedule of 7 July 2026, an assumption for earlier trades.
 * **Release times come from the user.** The loader writes a draft from market expiry times; the
   analysis does not accept it until it is checked against the official calendars.
-* **Three tests, one-sided.** The tested family is small by design; P3 prices are mid proxies, not
-  prices anyone could trade at.
+* **Three tests, one-sided.** The family is small by design; P3 prices are proxies, not tradable.
 
 ## References
 

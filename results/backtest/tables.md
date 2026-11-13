@@ -1,32 +1,32 @@
 ### B1. `release_aware` minus `flat_matched`, net P&L per event (synthetic data)
 
-Reading: In the null world `release_aware` earned 1.22 USD per event more than `flat_matched` (mean of 10 datasets, range +0.88 to +1.44; the 95% interval lies below zero in 0 of 10 datasets and above zero in 10). In the planted world `release_aware` earned 2.83 USD per event more than `flat_matched` (mean of 10 datasets, range +2.05 to +3.80; the 95% interval lies below zero in 0 of 10 datasets and above zero in 10). `flat_matched` quotes one flat premium equal to the average of the bucket premiums over the quoting window, so the difference is the effect of when a premium is applied and not of its average size (both premiums are per unit of 4m(1 - m); the quoted spreads in USD also depend on the price, see B2). Intervals are percentile intervals of a cluster bootstrap over events with 10,000 replications.
+Reading: In the null world `release_aware` earned 1.22 USD per event more than `flat_matched` (mean of 10 datasets, range +0.88 to +1.44; the 95% interval lies below zero in 0 of 10 datasets and above zero in 10). In the planted world `release_aware` earned 2.83 USD per event more than `flat_matched` (mean of 10 datasets, range +2.05 to +3.80; the 95% interval lies below zero in 0 of 10 datasets and above zero in 10). `flat_matched` quotes one flat premium equal to the average of the bucket premiums over the clock of the quoting window (both premiums are per unit of 4m(1 - m); the quoted spreads in USD also depend on the price, see B2). That is the same premium averaged over the clock and not the same premium where the quotes are hit: B2 gives the premium at the fills of each policy and B10 repeats the comparison at an equal premium at the fills. Intervals are percentile intervals of a cluster bootstrap over events with 10,000 replications.
 
 | World | Mean difference, USD per event (MC SE over datasets) | Range over datasets | 95% interval below zero | 95% interval above zero | 95% interval contains zero | Mean interval half-width, USD |
 |---|---|---|---|---|---|---|
 | null | +1.22 (0.05) | +0.88 to +1.44 | 0 | 10 | 0 | 0.56 |
 | planted | +2.83 (0.14) | +2.05 to +3.80 | 0 | 10 | 0 | 0.95 |
 
-Does not show: whether the planted informed share is what makes the bucket premiums useful: the null world's buckets also differ, because of the trade-rate surge and the price level; and whether either policy earns or loses money on real Kalshi markets: the tape, the fill rule and the quote parameters are assumptions.
+Does not show: whether the planted informed share is what makes the bucket premiums useful: the null world's buckets also differ, because of the trade-rate surge and the price level; whether the difference comes from when the premium is applied or from the larger premium that `release_aware` has at its fills (B10); and whether either policy earns or loses money on real Kalshi markets: the tape, the fill rule and the quote parameters are assumptions.
 
 ### B2. The five policies, means over the datasets of each world (synthetic data)
 
-Reading: Net P&L per event is negative in 10 of 10 world and policy cells; the highest is `pooled_premium` in the null world (-8.19 USD) and the lowest `always_on` in the planted world (-21.64 USD). In the null world the mean quoted spread, in cents, is `release_aware` 4.73, `flat_matched` 4.81, `pooled_premium` 5.58. In the planted world the mean quoted spread, in cents, is `release_aware` 4.97, `flat_matched` 5.37, `pooled_premium` 6.99.
+Reading: Net P&L per event is negative in 10 of 10 world and policy cells; the highest is `pooled_premium` in the null world (-8.19 USD) and the lowest `always_on` in the planted world (-21.64 USD). In the null world the mean quoted spread, in cents, is `release_aware` 4.73, `flat_matched` 4.81, `pooled_premium` 5.58. In the planted world the mean quoted spread, in cents, is `release_aware` 4.97, `flat_matched` 5.37, `pooled_premium` 6.99. In the null world the premium per unit of 4m(1 - m) at the fills, over the contracts filled, in cents, is `release_aware` 1.60, `flat_matched` 1.25, `pooled_premium` 1.80. In the planted world the premium per unit of 4m(1 - m) at the fills, over the contracts filled, in cents, is `release_aware` 2.54, `flat_matched` 1.65, `pooled_premium` 2.80.
 
-| World | Policy | Net P&L per event, USD (MC SE over datasets) | Fees per event, USD | Fills per event | Contracts per event | Net cents per contract | Marked P&L per event, USD | Share of intervals with a quote | Mean quoted spread, cents |
-|---|---|---|---|---|---|---|---|---|---|
-| null | `always_on` | -16.12 (0.51) | 2.93 | 143.4 | 896.7 | -1.80 | -16.19 | 0.937 | 3.02 |
-| null | `pull_only` | -15.69 (0.52) | 2.86 | 139.1 | 871.1 | -1.80 | -15.85 | 0.931 | 3.02 |
-| null | `pooled_premium` | -8.19 (0.32) | 2.12 | 102.0 | 637.1 | -1.29 | -8.27 | 0.937 | 5.58 |
-| null | `flat_matched` | -10.32 (0.33) | 2.37 | 115.1 | 719.2 | -1.44 | -10.46 | 0.937 | 4.81 |
-| null | `release_aware` | -9.10 (0.35) | 2.20 | 104.6 | 657.0 | -1.39 | -9.22 | 0.937 | 4.73 |
-| planted | `always_on` | -21.64 (0.54) | 2.76 | 139.8 | 875.4 | -2.47 | -20.81 | 0.917 | 3.02 |
-| planted | `pull_only` | -21.13 (0.53) | 2.74 | 138.3 | 866.9 | -2.44 | -20.32 | 0.916 | 3.02 |
-| planted | `pooled_premium` | -9.92 (0.26) | 1.78 | 91.0 | 566.9 | -1.75 | -9.23 | 0.917 | 6.99 |
-| planted | `flat_matched` | -13.97 (0.29) | 2.18 | 111.6 | 696.8 | -2.00 | -13.25 | 0.917 | 5.37 |
-| planted | `release_aware` | -11.14 (0.21) | 2.09 | 103.3 | 649.3 | -1.72 | -10.58 | 0.917 | 4.97 |
+| World | Policy | Net P&L per event, USD (MC SE over datasets) | Fees per event, USD | Fills per event | Contracts per event | Net cents per contract | Marked P&L per event, USD | Share of intervals with a quote | Mean quoted spread, cents | Premium at the fills, cents per unit of 4m(1 - m) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| null | `always_on` | -16.12 (0.51) | 2.93 | 143.4 | 896.7 | -1.80 | -16.19 | 0.937 | 3.02 | 0.00 |
+| null | `pull_only` | -15.69 (0.52) | 2.86 | 139.1 | 871.1 | -1.80 | -15.85 | 0.931 | 3.02 | 0.00 |
+| null | `pooled_premium` | -8.19 (0.32) | 2.12 | 102.0 | 637.1 | -1.29 | -8.27 | 0.937 | 5.58 | 1.80 |
+| null | `flat_matched` | -10.32 (0.33) | 2.37 | 115.1 | 719.2 | -1.44 | -10.46 | 0.937 | 4.81 | 1.25 |
+| null | `release_aware` | -9.10 (0.35) | 2.20 | 104.6 | 657.0 | -1.39 | -9.22 | 0.937 | 4.73 | 1.60 |
+| planted | `always_on` | -21.64 (0.54) | 2.76 | 139.8 | 875.4 | -2.47 | -20.81 | 0.917 | 3.02 | 0.00 |
+| planted | `pull_only` | -21.13 (0.53) | 2.74 | 138.3 | 866.9 | -2.44 | -20.32 | 0.916 | 3.02 | 0.00 |
+| planted | `pooled_premium` | -9.92 (0.26) | 1.78 | 91.0 | 566.9 | -1.75 | -9.23 | 0.917 | 6.99 | 2.80 |
+| planted | `flat_matched` | -13.97 (0.29) | 2.18 | 111.6 | 696.8 | -2.00 | -13.25 | 0.917 | 5.37 | 1.65 |
+| planted | `release_aware` | -11.14 (0.21) | 2.09 | 103.3 | 649.3 | -1.72 | -10.58 | 0.917 | 4.97 | 2.54 |
 
-Does not show: which part of a loss is adverse selection: the table has no fill-level decomposition; the spread is that of the quotes posted, ask minus bid at the refreshes with both sides quoted, not the width at which fills happened.
+Does not show: which part of a loss is adverse selection: the table has no decomposition of the losses; the spread is that of the quotes posted, ask minus bid at the refreshes with both sides quoted, not the width at which fills happened; and the premium at the fills is per unit of 4m(1 - m), so in USD it also depends on the price.
 
 ### B3. Secondary comparisons of net P&L per event (synthetic data)
 
@@ -139,11 +139,11 @@ Reading: Exploratory: added after the first results because B1 and the rehearsal
 | 12 | 10 | +2.83 (0.14) | 0 | 10 | -1.22 (0.12) | 9 | 0 | 2.80 | 1.65 | 8.95 | 0.88 |
 | 30 | 10 | +1.71 (0.10) | 0 | 10 | +1.37 (0.11) | 0 | 10 | 1.77 | 1.64 | 8.37 | 0.86 |
 
-Does not show: whether either difference follows the level of the premium only (B9 is the test of that), and anything about real markets: the hours of trading are those of the synthetic world.
+Does not show: what either difference is made of: B9 and B10 change the level of the flat premium and describe what happens, they do not test it; and anything about real markets: the hours of trading are those of the synthetic world.
 
 ### B9. Exploratory: `release_aware` minus `flat_matched` by the scale of the flat premium, planted world (synthetic data)
 
-Reading: Exploratory: added after an independent review showed that the first primary pair followed the level of the pooled premium. The flat premium of `flat_matched` is multiplied by F and F = 1 is the primary comparison. At F = 1 `release_aware` earned 2.83 USD per event more than `flat_matched` (mean of 10 datasets; the 95% interval lies below zero in 0 of 10 datasets and above zero in 10). At the largest F = 2 `release_aware` earned 2.50 USD per event less than `flat_matched` (mean of 10 datasets; the 95% interval lies below zero in 10 of 10 datasets and above zero in 0). The mean difference changes sign at F = 1.47, by linear interpolation between the means at F = 1.25 and F = 1.5; this describes the grid and is not an estimate with an interval. The mean pooled premium at the end is 2.80 cents and the mean matched premium 1.65 cents, a ratio of 1.70, so at the end of a dataset `pooled_premium` quotes the premium that `flat_matched` quotes at F = 1.70. Every policy loses money in the planted world (B2), so a wider quote loses less. Intervals are percentile intervals of a cluster bootstrap over events with 10,000 replications.
+Reading: Exploratory: added after an independent review showed that the first primary pair followed the level of the pooled premium. The flat premium of `flat_matched` is multiplied by F and F = 1 is the primary comparison. At F = 1 `release_aware` earned 2.83 USD per event more than `flat_matched` (mean of 10 datasets; the 95% interval lies below zero in 0 of 10 datasets and above zero in 10). At the largest F = 2 `release_aware` earned 2.50 USD per event less than `flat_matched` (mean of 10 datasets; the 95% interval lies below zero in 10 of 10 datasets and above zero in 0). The mean difference changes sign at F = 1.47, by linear interpolation between the means at F = 1.25 and F = 1.5; this describes the grid and is not an estimate with an interval. The mean pooled premium at the end is 2.80 cents and the mean matched premium 1.65 cents, a ratio of 1.70, so at the end of a dataset `pooled_premium` quotes the premium that `flat_matched` quotes at F = 1.70. Every policy loses money in the planted world (B2), so a wider quote loses less. B10 gives the scale at which the two policies quote the same premium at their fills. Intervals are percentile intervals of a cluster bootstrap over events with 10,000 replications.
 
 | Scale F of the flat premium | Flat premium quoted at the end, cents | `release_aware` minus `flat_matched`: mean difference, USD per event (MC SE over datasets) | Range over datasets | 95% interval below zero | 95% interval above zero |
 |---|---|---|---|---|---|
@@ -156,3 +156,14 @@ Reading: Exploratory: added after an independent review showed that the first pr
 | 2 | 3.29 | -2.50 (0.13) | -3.00 to -1.44 | 10 | 0 |
 
 Does not show: that either policy earns money on real markets, and that the planted informed share is what makes the bucket premiums useful at F = 1: the null world has buckets that differ too (see the null row of B1).
+
+### B10. Exploratory: `release_aware` minus `flat_matched` at an equal premium at the fills (synthetic data)
+
+Reading: Exploratory: added after a second independent review showed that `flat_matched` is matched to `release_aware` on the average of the premium over the clock and not where the quotes are hit (B1, B2). In the null world `release_aware` quotes 1.60 cents per unit of 4m(1 - m) at its fills against 1.25 for `flat_matched` (+28%). With the flat premium scaled by F_eq = 1.28 both quote about the same premium at their fills (1.60 and 1.60 cents) and `release_aware` earned 0.17 USD per event less than `flat_matched` (mean of 10 datasets; the 95% interval lies below zero in 3 of 10 datasets and above zero in 0). In the planted world `release_aware` quotes 2.54 cents per unit of 4m(1 - m) at its fills against 1.65 for `flat_matched` (+54%). With the flat premium scaled by F_eq = 1.54 both quote about the same premium at their fills (2.54 and 2.54 cents) and `release_aware` earned 0.38 USD per event less than `flat_matched` (mean of 10 datasets; the 95% interval lies below zero in 1 of 10 datasets and above zero in 0). F_eq is the premium per unit of 4m(1 - m) at the fills of `release_aware` divided by that of `flat_matched`, from one run of each; `flat_matched` is then run again with its flat premium multiplied by F_eq. Intervals are percentile intervals of a cluster bootstrap over events with 10,000 replications.
+
+| World | Scale F_eq of the flat premium, mean (range over datasets) | Premium at the fills of `release_aware`, cents | Premium at the fills of `flat_matched` at F = 1, cents | Premium at the fills of `flat_matched` at F_eq, cents | `release_aware` minus `flat_matched` at F_eq: mean difference, USD per event (MC SE over datasets) | Range over datasets | 95% interval below zero | 95% interval above zero |
+|---|---|---|---|---|---|---|---|---|
+| null | 1.28 (1.26 to 1.30) | 1.60 | 1.25 | 1.60 | -0.17 (0.08) | -0.59 to +0.06 | 3 | 0 |
+| planted | 1.54 (1.50 to 1.59) | 2.54 | 1.65 | 2.54 | -0.38 (0.12) | -1.04 to +0.38 | 1 | 0 |
+
+Does not show: which level is the right one to hold fixed: the average over the clock is fixed in advance and is not what the P&L responds to, and the premium at the fills is what it responds to but is partly an outcome of the schedule, because a policy is filled less where it quotes more premium; that F_eq is known beforehand: it is estimated from the same run as the difference, and the intervals treat it as given; and anything about real markets.

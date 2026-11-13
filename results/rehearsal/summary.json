@@ -343,6 +343,17 @@
       "seed": 20261113
     },
     "sensitivity": {
+      "flat premium scaled to the premium at the fills of release_aware (F = 1.53)": {
+        "B": 10000,
+        "ci": [
+          -0.965989055555556,
+          0.12647015277777726
+        ],
+        "mean": -0.4204138888888896,
+        "n_releases": 180,
+        "p_one_sided": 0.932,
+        "seed": 20261113
+      },
       "maker fee coefficient 0": {
         "B": 10000,
         "ci": [
@@ -370,6 +381,7 @@
       "always_on": {
         "contracts": 540.9666666666667,
         "fees": 1.486666111111111,
+        "fill_premium": 0.0,
         "fills": 85.78333333333333,
         "gross": -9.36788888888889,
         "marked_pnl": -9.899110555555557,
@@ -379,6 +391,7 @@
       "flat_matched": {
         "contracts": 420.3666666666667,
         "fees": 1.1641683333333332,
+        "fill_premium": 0.015829791086118723,
         "fills": 66.81666666666666,
         "gross": -5.931777777777779,
         "marked_pnl": -6.581335,
@@ -388,6 +401,7 @@
       "pooled_premium": {
         "contracts": 413.22222222222223,
         "fees": 1.1461388888888888,
+        "fill_premium": 0.01675520631130314,
         "fills": 65.77222222222223,
         "gross": -5.7730000000000015,
         "marked_pnl": -6.410444444444445,
@@ -397,6 +411,7 @@
       "pull_only": {
         "contracts": 536.6444444444444,
         "fees": 1.4767944444444443,
+        "fill_premium": 0.0,
         "fills": 84.99444444444444,
         "gross": -8.892833333333334,
         "marked_pnl": -9.667044444444446,
@@ -406,6 +421,7 @@
       "release_aware": {
         "contracts": 388.26666666666665,
         "fees": 1.1095688888888888,
+        "fill_premium": 0.024286897733592043,
         "fills": 61.52777777777778,
         "gross": -4.758888888888889,
         "marked_pnl": -5.479291111111112,
@@ -458,6 +474,7 @@
     ],
     "horizon_s": 300.0,
     "level": 0.95,
+    "max_off_tick_share": 0.05,
     "min_releases": 100,
     "min_trades": 50,
     "n_boot": 10000,

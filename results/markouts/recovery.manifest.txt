@@ -1,11 +1,11 @@
 experiment: recovery
 command: python -m kalshi_mm.experiments.recovery --out results/markouts
 seeds: population: world seed 0, 3000 events, bootstrap seed 20261113; replication r: world seed 20261113 + r (event e draws from default_rng([seed, e])), bootstrap seed SeedSequence([20261113, 2, r]).generate_state(1)[0] in every call of release_effect of that replication; surge share: default_rng(20261113)
-git commit: 4c5acb8f422425e5794b6610edfd908e6e8fbe5e (working tree clean)
+git commit: 622b59d1b4ccdec148a1e88d5f37f6353092e5e8 (working tree clean)
 python 3.12.3, numpy 2.5.4, scipy 1.18.1, pandas 3.1.1
-machine: Linux x86_64, 2 logical CPUs, load average at start 1.50
-started: 2026-11-13T11:35:31Z
-runtime: 154.1 s
+machine: Linux x86_64, 2 logical CPUs, load average at start 0.06
+started: 2026-11-13T14:52:38Z
+runtime: 158.1 s
 design: worlds ['planted', 'spec_null', 'flat_null'], sizes [25, 50, 100, 200, 400], 100 replications per world (design 200), cluster bootstrap B = 1000, population 3000 events per world
 outputs: population.csv, coverage.csv, power.csv, summary.json, tables.md
 notes: synthetic data only; nothing here is real Kalshi data

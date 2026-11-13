@@ -101,7 +101,11 @@ four keys hold the first fetch and are never replaced; `fetch_runs` holds every 
 included, as a JSON list of the same four fields. A fetch that stops records the time it stopped.
 `scripts/run_real.py` prints the list and writes a line to `DEVIATIONS.md` when the database has no
 record, when a fetch had uncommitted changes, or when the commit of a fetch is unknown, unknown to
-the repository or differs from the tag `real-run` in the files the tag check guards.
+the repository or differs from the tag `real-run` in the files the tag check guards. It also
+compares the start of the earliest fetch with the time at which the tag was created, which only an
+annotated tag (`git tag -a`) records: a fetch that started before the tag, a fetch whose start time
+cannot be read, and a tag that is not annotated are departures too. A start time without an offset
+is read as UTC.
 
 Column types are checked (`typeof`), prices lie in (0, 1), sizes are positive, and one database holds
 one source. Each market that passes the filters is written in its own transaction, replacing its
@@ -157,9 +161,12 @@ here; it needs the mid proxy.
   read on 2026-11-13). Both fields are stored per market. `scripts/run_real.py` counts, per series and
   in total, the kept trades whose `yes_price_dollars` is not a whole multiple of 0.01 USD (tolerance
   1e-9 USD) and the markets by `price_level_structure`, and prints and writes the counts (table K9,
-  `summary.json`). Not checked: whether a trade's price lies on its own market's `price_ranges`,
-  whether the grid changed during a market's life (only the grid of the record read at the fetch is
-  stored), and what a sub-cent grid would do to the quotes and fills of the backtest.
+  `summary.json`). One rule is fixed in advance (`docs/protocol.md`): when more than 5% of the kept
+  trades are off the 0.01 USD tick, P2 is labelled exploratory, because the backtest quotes and
+  fills on that tick; no trade is removed. Not checked: whether a trade's price lies on its own
+  market's `price_ranges`, whether the grid changed during a market's life (only the grid of the
+  record read at the fetch is stored), and what a sub-cent grid would do to the quotes and fills of
+  the backtest.
 - Both trade endpoints. `scripts/run_real.py` also counts the kept trades whose `trade_id` both trade
   endpoints returned and the groups of kept trades alike in everything but `trade_id` across the two
   endpoints. Such groups are kept, so if Kalshi gave one trade two ids, it is counted twice; the

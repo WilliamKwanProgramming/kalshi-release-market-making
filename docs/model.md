@@ -152,31 +152,48 @@ the clock, so every bucket counts for as long as it lasts in the quoting window.
 therefore differ in size even where the premium does not depend on time at all, and in the
 synthetic worlds the sign of `release_aware` minus `pooled_premium` follows that difference of
 size, not the dependence on time (tables B8 and B9 of the README). `flat_matched` removes the
-difference. With a quoting window of $W$ seconds and a refresh every $\rho$ seconds there are
-$J = \lceil W/\rho \rceil$ refreshes $j = 1, \dots, J$, and refresh $j$ is $\tau_j = (W -
-\rho\,(j-1))/60$ minutes before the release ($\tau_j = 720, 719, \dots, 1$ for 12 hours and 60
-seconds, so the buckets $(0,5]$, $(5,15]$, $(15,30]$, $(30,60]$, $(60,180]$, $(180,360]$ and
-$(360,\infty)$ hold 5, 10, 15, 30, 120, 180 and 360 refreshes). With $b(\tau)$ the bucket of
-$\tau$ and $\widehat{\mathrm{AS}}_b$ the premium of bucket $b$, estimated as above,
+difference between the averages over the clock. With a quoting window of $W$ seconds and a refresh
+every $\rho$ seconds there are $J = \lceil W/\rho \rceil$ refreshes $j = 1, \dots, J$, and refresh
+$j$ is $\tau_j = (W - \rho\,(j-1))/60$ minutes before the release ($\tau_j = 720, 719, \dots, 1$
+for 12 hours and 60 seconds, so the buckets $(0,5]$, $(5,15]$, $(15,30]$, $(30,60]$, $(60,180]$,
+$(180,360]$ and $(360,\infty)$ hold 5, 10, 15, 30, 120, 180 and 360 refreshes). With $b(\tau)$ the
+bucket of $\tau$ and $\widehat{\mathrm{AS}}_b$ the premium of bucket $b$, estimated as above,
 
 $$\overline{\mathrm{AS}} = \frac1J \sum_{j=1}^{J} \widehat{\mathrm{AS}}_{b(\tau_j)}.$$
 
 It uses the same earlier events as $\widehat{\mathrm{AS}}$ and no data of the event being quoted;
 it is zero until 20 earlier events exist. It does not depend on which refreshes have a quote. The
 rule was written down before the results for it were generated and has no parameter that was
-tuned; the multiplier of the sweep in table B9 is not part of the policy.
+tuned; the multiplier of the sweep in table B9 is not part of the policy. It was proposed by the
+first independent review of the repository, which had already reported the sign of the comparison
+at this level on the synthetic worlds, so the choice of the pair was not blind to that result.
 
 The primary comparison is `release_aware` against `flat_matched`: the same variance and, by
-construction, the same premium per unit of $4m(1-m)$ averaged over the refreshes of the quoting
-window, so they differ in when the premium is applied and not in how large it is on average. The
-premium in USD is that number times $4m(1-m)$, so the quoted spreads in USD are not equal by
-construction; table B2 of the README gives the mean quoted spread of each policy. A positive
-difference says that, at the same average premium per unit of $4m(1-m)$, the premium by minutes
-to the release earns more than a flat one. It does not say that the premium measures informed
-trading: the buckets of the null world
-differ too (the trade surge and the price level), and every policy loses money in the synthetic
-worlds, where a wider quote loses less. The other pairs, among them `release_aware` against
-`pooled_premium`, are secondary.
+construction, the same premium per unit of $4m(1-m)$ averaged over the clock of the quoting window
+(every refresh counts, whether or not it has a quote). That is the question the protocol asks in
+advance: does a premium by minutes to the release earn more than a flat premium of the same
+average size over the clock? It is not the same premium where the quotes are hit. The trades, and
+so the fills, are not spread evenly over the clock, and `release_aware` quotes more premium at the
+times at which the trades are: the premium per unit of $4m(1-m)$ at the fills, the mean over the
+contracts filled of the premium of the quote that was hit (`fill_premium`, tables B2 and R5 of
+the README), is larger for `release_aware` than for `flat_matched`. In the
+synthetic worlds every policy loses money and a wider quote loses less, so the difference of the
+pair mixes the effect of the schedule with the effect of the level at the fills. Neither way of
+holding the level fixed is neutral: the average over the clock is fixed in advance and is not what
+the P&L responds to, and the premium at the fills is what the P&L responds to but is partly an
+outcome of the schedule, because a policy is filled less where it quotes more. The README shows
+the difference at the scale of the flat premium that equalises the premium at the fills (table
+B10, exploratory; the sweep of the scale is table B9), and P2 reports it with the flat premium
+scaled by the ratio of the premiums at the fills.
+
+The premium in USD is that number times $4m(1-m)$, so the quoted spreads in USD are not equal by
+construction; table B2 of the README gives the mean quoted spread of each policy, which is the
+width that was posted and not the width at which the fills happened. A positive difference of the
+primary pair says only that, at the same average premium over the clock, the premium by minutes to
+the release earned more than a flat one in this backtest. It does not say that the premium
+measures informed trading: the buckets of the null world differ too (the trade surge and the price
+level), and the difference is positive there as well. The other pairs, among them `release_aware`
+against `pooled_premium`, are secondary.
 
 ## 7. Fills, fees and settlement
 
