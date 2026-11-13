@@ -538,12 +538,11 @@ def build_dataset(
     ``trades_records_by_market`` maps a market ticker to its trade records; ``calendar`` is the
     frame of :func:`load_release_calendar`; the window is in Unix seconds, ``window_start`` inside
     and ``window_end`` outside. The filters and their order are in the module docstring. The
-    frames are those of the data contract (``tape`` has two more columns, ``trade_id`` and
-    ``endpoint``, and
-    ``markets`` two, ``price_level_structure`` and ``price_ranges``, which ``panel.write_dataset``
-    stores and ``panel.read_dataset`` does not return) in the order
-    ``panel.read_dataset`` gives: tape by (market, ts, seq), events by (release, event), markets by
-    (release of the event, event, market). An event is kept when one of its markets is.
+    frames are those of the data contract in the order ``panel.read_dataset`` gives: tape by
+    (market, ts, seq), events by (release, event), markets by (release of the event, event,
+    market). ``tape`` has two more columns, ``trade_id`` and ``endpoint``, and ``markets`` two,
+    ``price_level_structure`` and ``price_ranges``; ``panel.write_dataset`` stores them and
+    ``panel.read_dataset`` does not return them. An event is kept when one of its markets is.
     """
     report = BuildReport(min_trades=min_trades)
     release_of = _release_times(calendar)

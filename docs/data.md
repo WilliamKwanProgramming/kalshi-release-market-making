@@ -106,8 +106,8 @@ the repository or differs from the tag `real-run` in the files the tag check gua
 Column types are checked (`typeof`), prices lie in (0, 1), sizes are positive, and one database holds
 one source. Each market that passes the filters is written in its own transaction, replacing its
 earlier trades. A database written before a column was added to the schema is refused with a message
-that names the missing columns (`panel.schema_problem`); build a new one. `panel.trade_panel_sql` computes the markout panel of `docs/model.md` section 5
-inside SQLite (version 3.35 or later).
+that names the missing columns (`panel.schema_problem`); build a new one. `panel.trade_panel_sql`
+computes the markout panel of `docs/model.md` section 5 inside SQLite (version 3.35 or later).
 
 ## The release calendar
 
@@ -166,9 +166,9 @@ here; it needs the mid proxy.
   count bounds how many trades that can be.
 - The documentation does not say: whether `min_ts` and `max_ts` include their bound; the order of
   trades within a page; the rate limit without credentials; whether a trade near the cutoff has the
-  same `trade_id` on both endpoints (counted, above); which filters of `/historical/markets` can be combined ("Filters
-  are mutually exclusive"). `/markets` answers are cached briefly, so a market that has just settled
-  could show an empty `result`, and then has no outcome in the data.
+  same `trade_id` on both endpoints (counted, above); which filters of `/historical/markets` can be
+  combined ("Filters are mutually exclusive"). `/markets` answers are cached briefly, so a market
+  that has just settled could show an empty `result`, and then has no outcome in the data.
 - Terms. Kalshi's Developer Agreement (v1.1,
   https://kalshi-public-docs.s3.amazonaws.com/Kalshi-Developer-Agreement.pdf) limits use of the API,
   in section 3, to facilitating a member's own trading, and lists in 3.1 as "explicitly prohibited"

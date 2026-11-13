@@ -149,3 +149,7 @@ All were made before any real-data result existed.
   fitted on every earlier release, which used an outcome that was not known at the price time
   when two releases are less than 24 hours apart). No synthetic result changes: the synthetic
   releases are 168 hours apart.
+- 2026-11-13, same review: two checks were added before reading any result (items 4 and 5 of
+  "Checks before reading any result"): the counts of trades off the 0.01 USD tick and of trades
+  seen on both trade endpoints, reported and not removed, and the record of the fetches, whose
+  departures go to `DEVIATIONS.md`. No analysis choice changed.
