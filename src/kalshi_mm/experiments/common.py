@@ -130,7 +130,7 @@ def mean_se(df: pd.DataFrame, by: list[str], cols: list[str]) -> pd.DataFrame:
     g = df.groupby(by, sort=False)[cols]
     mean = g.mean()
     se = g.std(ddof=1) / np.sqrt(g.count())
-    out = mean.join(se, rsuffix="_se")
+    out = mean.join(se.add_suffix("_se"))
     out["n_rep"] = g.size()
     return out.reset_index()
 
