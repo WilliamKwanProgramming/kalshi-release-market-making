@@ -127,8 +127,8 @@ CHECKS: list[tuple[str, str, str]] = [
     ("docs/protocol.md", "holds about 100 scheduled releases",
      "The range holds about 100 scheduled"),
     # the mutation check
-    ("results/mutation_check.txt", "437 of 437 mutants caught.",
-     "437 hand-written mutants, all caught"),
+    ("results/mutation_check.txt", "492 of 492 mutants caught.",
+     "492 hand-written mutants, all caught"),
     # the rehearsal (tables R2 to R8)
     ("results/rehearsal/rehearsal.manifest.txt", "world: 200 events of 30.0 hours",
      "a world of 200 events (30 hours of trading before each release)"),
