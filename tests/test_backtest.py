@@ -31,8 +31,10 @@ RELEASE = 10_000.0
 # six refresh intervals of 60 s: decisions at 9640, 9700, ..., 9940, live from 1 s later. With
 # k = 40 the always-on quotes at a mid of 0.50 are bid 0.47 and ask 0.53 in every interval
 HAND = QuoteParams(gamma=0.002, k=40.0, window_hours=0.1)
-ZERO = Premiums(0.0, (0.0,) * 7, 0)
-PREMIUMS = Premiums(pooled=0.05, by_bucket=(0.10, 0.08, 0.06, 0.04, 0.03, 0.02, 0.01), n_events=40)
+ZERO = Premiums(0.0, (0.0,) * 7, 0, 0.0)
+PREMIUMS = Premiums(
+    pooled=0.05, by_bucket=(0.10, 0.08, 0.06, 0.04, 0.03, 0.02, 0.01), n_events=40, matched=0.04
+)
 
 BUY, SELL = 1, -1
 
@@ -369,6 +371,33 @@ def test_release_aware_quotes_the_premium_of_the_bucket_of_each_refresh():
     assert r.pnl == pytest.approx(3.04 - 0.0987, abs=1e-12)
 
 
+def test_flat_matched_quotes_the_matched_premium_in_every_interval():
+    r = run(WIDE, "flat_matched", premiums=PREMIUMS)
+    # matched 0.04: h = 4 * 0.25 * 0.04 = 0.04, bid 0.5 - 0.02525 - 0.04 = 0.43475 -> 0.43 and
+    # ask 0.56525 -> 0.57 in all six intervals; the prints at 0.25 and 0.75 are through them
+    assert (r.fills, r.contracts, r.inventory_end) == (6, 24.0, 0.0)
+    assert r.gross == pytest.approx(3 * 4 * (0.57 - 0.43), abs=1e-12)
+    assert r.fees == pytest.approx(6 * 0.0172, abs=1e-12)  # 0.0175 * 4 * 0.2451 = 0.017157
+    assert r.pnl == pytest.approx(1.68 - 0.1032, abs=1e-12)
+    # flat_scale multiplies the premium: 2 gives h = 0.08, bid 0.39475 -> 0.39, ask 0.60525 -> 0.61
+    double = run(WIDE, "flat_matched", premiums=PREMIUMS, params=replace(HAND, flat_scale=2.0))
+    assert double.gross == pytest.approx(3 * 4 * (0.61 - 0.39), abs=1e-12)
+    assert double.fees == pytest.approx(6 * 0.0167, abs=1e-12)  # 0.0175 * 4 * 0.2379 = 0.016653
+
+
+def test_flat_matched_needs_the_matched_premium():
+    without = Premiums(0.05, (0.10, 0.08, 0.06, 0.04, 0.03, 0.02, 0.01), 40)
+    with pytest.raises(ValueError, match="matched"):
+        run(WIDE, "flat_matched", premiums=without)
+
+
+def test_the_three_premium_policies_agree_when_all_their_premiums_are_equal():
+    same = Premiums(0.03, (0.03,) * 7, 40, 0.03)
+    results = {p: run(WIDE, p, premiums=same) for p in
+               ("pooled_premium", "flat_matched", "release_aware")}
+    assert len({(r.pnl, r.fills, r.contracts, r.fees) for r in results.values()}) == 1
+
+
 def test_the_premium_widens_the_quote_until_the_prints_no_longer_reach_it():
     rows = PRE + [(9650.0, SELL, 0.45, 4.0), (9710.0, BUY, 0.55, 4.0)]
     # at a mid of 0.50 the premium of 4 m (1 - m) = 1 times the rate is added to the half-spread
@@ -577,10 +606,13 @@ def ref_quote(policy, m, q, tau, sigma, premiums, p):
     mm = m * (1.0 - m)
     v = (sigma * mm) ** 2 * tau / 60.0
     h = 0.0
-    if policy in ("pooled_premium", "release_aware"):
+    if policy in ("pooled_premium", "flat_matched", "release_aware"):
         v += mm
-        rate = premiums.pooled if policy == "pooled_premium" else premiums.by_bucket[
-            int(bucket_index(tau))]
+        rate = {
+            "pooled_premium": premiums.pooled,
+            "flat_matched": None if premiums.matched is None else premiums.matched * p.flat_scale,
+            "release_aware": premiums.by_bucket[int(bucket_index(tau))],
+        }[policy]
         h = 4.0 * mm * rate
     r = m - q * p.gamma * v
     delta = p.gamma * v + (2.0 / p.gamma) * math.log(1.0 + p.gamma / p.k)
@@ -674,7 +706,7 @@ def market_arrays(world, event):
 
 @pytest.mark.parametrize("rule", ["through", "touch"])
 def test_the_engine_equals_the_slow_reference_on_synthetic_tapes(rule):
-    """All four policies, both fill rules, several markets: every field agrees."""
+    """All five policies, both fill rules, several markets: every field agrees."""
     world, params = small_world(21, n_events=5)
     params = replace(params, fill_rule=rule)
     checked = 0
@@ -874,6 +906,9 @@ def explicit_rows(world, policies, params, burn_in=None):
     markouts = trade_markouts(world.tape, world.events, world.markets, horizon_s=params.horizon_s,
                               stale_s=params.stale_s)
     window = params.window_hours * 3600.0
+    # the minutes to the release of each decision of the window, written out without the library
+    minutes = [(window - params.refresh_s * j) / 60.0
+               for j in range(max(1, math.ceil(window / params.refresh_s - 1e-9)))]
     events = world.events.sort_values(["release_ts", "event"]).reset_index(drop=True)
     release_of = dict(zip(world.events["event"], world.events["release_ts"], strict=True))
     event_of = dict(zip(world.markets["market"], world.markets["event"], strict=True))
@@ -884,7 +919,7 @@ def explicit_rows(world, policies, params, burn_in=None):
             zip(events["event"], events["release_ts"], events["series"], strict=True)):
         earlier = set(events.loc[events["release_ts"] <= release - window, "event"])
         premiums = estimate_premiums(markouts[markouts["event"].isin(earlier)],
-                                     min_events=params.min_history_events)
+                                     min_events=params.min_history_events, minutes=minutes)
         vols = [window_vols(world.tape, m, release_of[event_of[m]], params)
                 for m in world.markets["market"] if event_of[m] in earlier]
         pooled = np.concatenate(vols) if vols else np.array([])
@@ -930,8 +965,8 @@ def test_walk_forward_equals_the_event_by_event_computation():
     world, params = small_world(12, n_events=30)
     got = walk_forward(world.tape, world.markets, world.events, POLICIES, params)
     assert_rows_equal(got, explicit_rows(world, POLICIES, params))
-    assert len(got) == 30 * 4
-    assert got["fills"].sum() > 1000 and (got["fills"] == 0).sum() < 60
+    assert len(got) == 30 * len(POLICIES)
+    assert got["fills"].sum() > 1000 and (got["fills"] == 0).sum() < 75
 
 
 def test_walk_forward_layout_and_burn_in():
@@ -979,9 +1014,9 @@ def test_events_of_two_markets_run_each_market_on_its_own():
     merged = replace(world, tape=tape, markets=markets, events=events)
     got = walk_forward(tape, markets, events, POLICIES, params)
     assert_rows_equal(got, explicit_rows(merged, POLICIES, params))
-    assert len(got) == 30 * 4  # one row per market and policy
+    assert len(got) == 30 * len(POLICIES)  # one row per market and policy
     per_event = got.groupby(["event", "policy"])["pnl"].sum()
-    assert len(per_event) == 15 * 4
+    assert len(per_event) == 15 * len(POLICIES)
     assert got["market"].nunique() == 30 and got["event"].nunique() == 15
 
     # the second market of an event does not change the first one, and the other way round
@@ -1005,7 +1040,7 @@ def test_walk_forward_does_not_use_later_events():
     ids = list(world.events["event"])
     later = set(ids[21:])
     upto = base[~base["event"].isin(later)]
-    assert len(upto) == 21 * 4
+    assert len(upto) == 21 * len(POLICIES)
 
     rng = np.random.default_rng(2)
     tape = world.tape.copy()

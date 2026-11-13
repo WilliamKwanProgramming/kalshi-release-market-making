@@ -18,19 +18,25 @@ policy                variance ``v``                                  premium ``
 ``always_on``         ``(sigma m (1 - m))^2 tau_h``                   0
 ``pull_only``         as ``always_on``, no quote within 5 minutes     0
 ``pooled_premium``    ``(sigma m (1 - m))^2 tau_h + m (1 - m)``       ``4 m (1 - m) AS``
+``flat_matched``      as ``pooled_premium``                           ``4 m (1 - m) AS_flat``
 ``release_aware``     as ``pooled_premium``                           ``4 m (1 - m) AS_bucket``
 ====================  ==============================================  =====================
 
 ``AS`` is the mean over the trades of earlier events of the 5-minute adverse selection divided by
 ``4 m (1 - m)`` (:func:`estimate_premiums`); ``AS_bucket`` is the same mean over the trades whose
-minutes to the release are in the bucket of the refresh. ``m`` is the mid proxy at the refresh.
-Nothing here reads a column whose name starts with ``latent_``.
+minutes to the release are in the bucket of the refresh. ``AS_flat`` is the average of
+``AS_bucket`` over the refreshes of the quoting window (:func:`matched_premium`), so
+``flat_matched`` and ``release_aware`` quote the same premium on average over the window and differ
+only in when they quote it. ``pooled_premium`` is a flat premium of another size: ``AS`` weighs
+every trade equally, and the trades are not spread evenly over the window. ``m`` is the mid proxy
+at the refresh. Nothing here reads a column whose name starts with ``latent_``.
 """
 
 from __future__ import annotations
 
 import math
 from bisect import bisect_left
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -39,7 +45,7 @@ import pandas as pd
 from numpy.typing import ArrayLike, NDArray
 
 from kalshi_mm.logit import logit
-from kalshi_mm.markout import BUCKET_EDGES_MIN, BUCKET_LABELS
+from kalshi_mm.markout import BUCKET_EDGES_MIN, BUCKET_LABELS, bucket_index
 from kalshi_mm.tape import mid_proxy_asof
 
 __all__ = [
@@ -47,13 +53,17 @@ __all__ = [
     "Policy",
     "Premiums",
     "QuoteParams",
+    "decision_minutes",
     "estimate_premiums",
+    "matched_premium",
     "quote_prices",
     "realized_logit_vol",
 ]
 
-Policy = Literal["always_on", "pull_only", "pooled_premium", "release_aware"]
-POLICIES: tuple[Policy, ...] = ("always_on", "pull_only", "pooled_premium", "release_aware")
+Policy = Literal["always_on", "pull_only", "pooled_premium", "flat_matched", "release_aware"]
+POLICIES: tuple[Policy, ...] = (
+    "always_on", "pull_only", "pooled_premium", "flat_matched", "release_aware"
+)
 
 MIN_VARIANCE_SCALE = 0.05  # trades with m (1 - m) below this do not enter the premium (model.md 6)
 MIN_VOL_POINTS = 6  # valid grid points needed for a realized volatility
@@ -76,6 +86,9 @@ class QuoteParams:
     exist and ``sigma_default`` is the volatility floor before any earlier event exists.
     ``maker_fee_coeff`` is the coefficient of the maker fee and ``fill_rule`` is ``"through"``
     (a print strictly beyond the quote fills it) or ``"touch"`` (a print at the quote fills it too).
+    ``flat_scale`` multiplies the premium of ``flat_matched``: 1 gives the flat premium with the
+    same average as the bucket premiums, which is the comparison of the protocol, and other values
+    are only for the level sweep of table B9.
     """
 
     gamma: float = 0.002
@@ -96,10 +109,11 @@ class QuoteParams:
     sigma_default: float = 0.1
     maker_fee_coeff: float = 0.0175
     fill_rule: Literal["through", "touch"] = "through"
+    flat_scale: float = 1.0
 
     def __post_init__(self) -> None:
         for name in ("gamma", "k", "size", "max_position", "refresh_s", "window_hours",
-                     "vol_lookback_s", "horizon_s"):
+                     "vol_lookback_s", "horizon_s", "flat_scale"):
             _require(_positive(getattr(self, name)), f"{name} must be positive and finite")
         for name in ("pull_minutes", "stale_s", "sigma_default", "maker_fee_coeff"):
             _require(_non_negative(getattr(self, name)), f"{name} must be non-negative and finite")
@@ -120,18 +134,22 @@ class Premiums:
 
     ``pooled`` is the mean over all minutes to the release, ``by_bucket`` has one entry per
     :data:`kalshi_mm.markout.BUCKET_LABELS` and ``n_events`` is the number of events the estimate
-    comes from. The quote adds ``4 m (1 - m)`` times the premium to each half-spread.
+    comes from. ``matched`` is the average of ``by_bucket`` over the refreshes of the quoting window
+    (:func:`matched_premium`), or None when the estimate was made without them. The quote adds
+    ``4 m (1 - m)`` times the premium to each half-spread.
     """
 
     pooled: float
     by_bucket: tuple[float, ...]
     n_events: int
+    matched: float | None = None
 
     def __post_init__(self) -> None:
         _require(len(self.by_bucket) == len(BUCKET_LABELS),
                  f"by_bucket needs one premium per bucket ({len(BUCKET_LABELS)})")
         _require(all(math.isfinite(x) for x in (self.pooled, *self.by_bucket)),
                  "premiums must be finite")
+        _require(self.matched is None or math.isfinite(self.matched), "premiums must be finite")
 
 
 def _positive(x: object) -> bool:
@@ -147,8 +165,44 @@ def _require(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
+def decision_minutes(params: QuoteParams) -> NDArray[np.float64]:
+    """Minutes to the release at each decision of the quoting window, first decision first.
+
+    The window has ``ceil(window_hours * 3600 / refresh_s)`` decisions (at least one), and decision
+    ``j`` is taken ``window - j * refresh_s`` seconds before the release (docs/model.md section 6,
+    :func:`kalshi_mm.backtest.prepare_market`). Every value is positive.
+    """
+    window = params.window_hours * 3600.0
+    n = max(1, math.ceil(window / params.refresh_s - 1e-9))
+    return (window - params.refresh_s * np.arange(n, dtype=np.float64)) / 60.0
+
+
+def matched_premium(by_bucket: Sequence[float], minutes: ArrayLike) -> float:
+    """Average over decisions of the premium of the bucket that each decision falls in.
+
+    ``by_bucket`` has one premium per bucket of :data:`kalshi_mm.markout.BUCKET_LABELS` and
+    ``minutes`` the (positive) minutes to the release of each decision of the quoting window, for
+    example :func:`decision_minutes`. This is the premium that ``release_aware`` quotes, averaged
+    over the clock time of the window with every refresh counted once (docs/model.md section 6). A
+    flat premium of this size has the same average over the window as the bucket premiums, so
+    quoting it (``flat_matched``) isolates the effect of when a premium is applied from the effect
+    of how large it is on average.
+    """
+    taus = np.asarray(minutes, dtype=np.float64)
+    _require(taus.ndim == 1 and taus.size > 0 and bool(np.all(taus > 0.0)),
+             "minutes must be a non-empty vector of positive times")
+    premiums = np.asarray(by_bucket, dtype=np.float64)
+    _require(premiums.shape == (len(BUCKET_LABELS),),
+             f"by_bucket needs one premium per bucket ({len(BUCKET_LABELS)})")
+    return float(premiums[bucket_index(taus)].mean())
+
+
 def estimate_premiums(
-    markouts_prior: pd.DataFrame, *, min_events: int, floor: float = 0.0
+    markouts_prior: pd.DataFrame,
+    *,
+    min_events: int,
+    floor: float = 0.0,
+    minutes: ArrayLike | None = None,
 ) -> Premiums:
     """Premiums per unit of ``4 m (1 - m)`` from the trade markouts of earlier events.
 
@@ -160,12 +214,14 @@ def estimate_premiums(
     the same mean over the trades of the bucket. Each is floored at ``floor``. A bucket without a
     usable trade gets the pooled premium; if no trade is usable at all, every premium is
     ``max(0, floor)``. With fewer than ``min_events`` distinct events in the frame all premiums
-    are 0. ``n_events`` of the result is the number of distinct events in the frame.
+    are 0. ``n_events`` of the result is the number of distinct events in the frame. If ``minutes``
+    (the minutes to the release of each decision of the quoting window) is given, ``matched`` is
+    :func:`matched_premium` of the bucket premiums, else None.
     """
     n_events = int(markouts_prior["event"].nunique())
     n_buckets = len(BUCKET_LABELS)
     if n_events < min_events:
-        return Premiums(0.0, (0.0,) * n_buckets, n_events)
+        return Premiums(0.0, (0.0,) * n_buckets, n_events, None if minutes is None else 0.0)
     mid = markouts_prior["mid_before"].to_numpy(dtype=np.float64)
     adverse = markouts_prior["adverse_selection"].to_numpy(dtype=np.float64)
     bucket = markouts_prior["bucket"].to_numpy()
@@ -175,7 +231,8 @@ def estimate_premiums(
     in_bucket = bucket[usable]
     no_information = max(0.0, floor)
     if normalised.size == 0:
-        return Premiums(no_information, (no_information,) * n_buckets, n_events)
+        return Premiums(no_information, (no_information,) * n_buckets, n_events,
+                        None if minutes is None else no_information)
     pooled = max(floor, float(normalised.mean()))
     counts = np.bincount(in_bucket, minlength=n_buckets)
     sums = np.bincount(in_bucket, weights=normalised, minlength=n_buckets)
@@ -183,7 +240,8 @@ def estimate_premiums(
         max(floor, float(sums[b] / counts[b])) if counts[b] > 0 else pooled
         for b in range(n_buckets)
     )
-    return Premiums(pooled, by_bucket, n_events)
+    matched = None if minutes is None else matched_premium(by_bucket, minutes)
+    return Premiums(pooled, by_bucket, n_events, matched)
 
 
 def realized_logit_vol(
@@ -263,8 +321,10 @@ def quote_prices(
 
     With ``mm = m (1 - m)``, ``v = (sigma mm)^2 tau_h`` plus ``mm`` for the premium policies,
     ``r = m - q gamma v``, ``delta = gamma v + (2 / gamma) ln(1 + gamma / k)`` and the premium
-    ``h = 4 mm * AS`` (0 for the policies without one) the bid is ``r - delta / 2 - h`` rounded
-    down and the ask ``r + delta / 2 + h`` rounded up to the tick, then clipped to
+    ``h = 4 mm * AS`` (0 for the policies without one; ``AS`` is ``premiums.pooled``,
+    ``premiums.matched * params.flat_scale`` or the premium of the bucket of ``tau_minutes``, for
+    ``pooled_premium``, ``flat_matched`` and ``release_aware``) the bid is ``r - delta / 2 - h``
+    rounded down and the ask ``r + delta / 2 + h`` rounded up to the tick, then clipped to
     ``[tick, 1 - tick]``; if that leaves them less than a tick apart the ask moves up a tick (the
     bid moves down at the upper edge).
     """
@@ -285,6 +345,13 @@ def quote_prices(
     if policy == "pooled_premium":
         variance += mm
         premium = 4.0 * mm * premiums.pooled
+    elif policy == "flat_matched":
+        if premiums.matched is None:
+            raise ValueError(
+                "flat_matched needs premiums.matched: estimate_premiums(..., minutes=...)"
+            )
+        variance += mm
+        premium = 4.0 * mm * premiums.matched * params.flat_scale
     elif policy == "release_aware":
         variance += mm
         premium = 4.0 * mm * premiums.by_bucket[_bucket_of(tau_minutes)]

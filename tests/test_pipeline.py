@@ -148,10 +148,14 @@ def test_the_reported_effects_of_p1_are_recomputed_from_the_markouts(run):
 
 
 def test_the_policies_and_the_primary_pair_are_those_of_the_protocol():
-    assert PRIMARY_PAIR == ("release_aware", "pooled_premium")
-    assert PAIRS[0] == PRIMARY_PAIR and len(set(PAIRS)) == len(PAIRS) == 6
-    assert set(POLICIES) == {"always_on", "pull_only", "pooled_premium", "release_aware"}
+    assert PRIMARY_PAIR == ("release_aware", "flat_matched")
+    assert PAIRS[0] == PRIMARY_PAIR and len(set(PAIRS)) == len(PAIRS) == 10
+    assert set(POLICIES) == {
+        "always_on", "pull_only", "pooled_premium", "flat_matched", "release_aware"}
     assert all(a in POLICIES and b in POLICIES and a != b for a, b in PAIRS)
+    # every pair of different policies appears once, whichever way round
+    assert {frozenset(pair) for pair in PAIRS} == {
+        frozenset((a, b)) for i, a in enumerate(POLICIES) for b in POLICIES[i + 1:]}
 
 
 def test_p2_is_the_paired_difference_of_the_policy_pnl(run):
@@ -307,6 +311,31 @@ def test_a_small_sample_is_labelled_exploratory(run):
     labels = family(results.p1, results.p2, results.p3, 26, relaxed)
     assert all(v["verdict"] in {"supported", "not supported", "not computed"}
                for v in labels.values())
+
+
+def test_p2_is_exploratory_when_fewer_releases_enter_it_than_the_burn_in_leaves(run):
+    """Review finding K11: the minimum counts the releases that a test uses, and P2 does not use
+    the releases of the burn-in."""
+    from kalshi_mm.protocol import family
+
+    results, _, settings = run
+    kept, used = results.dataset.counts["releases kept"], results.p2["n_releases"]
+    assert used == kept - settings.quote.min_history_events < kept
+    at_kept = family(results.p1, results.p2, results.p3, kept,
+                     with_overrides(settings, [f"min_releases={kept}"]))
+    assert at_kept["P1"]["verdict"] in {"supported", "not supported"}
+    assert at_kept["P2"]["verdict"] == "exploratory"
+    at_used = family(results.p1, results.p2, results.p3, kept,
+                     with_overrides(settings, [f"min_releases={used}"]))
+    assert at_used["P2"]["verdict"] in {"supported", "not supported"}
+    text = tables_markdown(results)
+    assert f"P2 is exploratory because fewer than {DEFAULT.min_releases} releases enter it " \
+           f"({used:,} after the burn-in)." in text
+    assert f"P1 is exploratory because fewer than {DEFAULT.min_releases} releases enter it." in text
+    enough = run_protocol(
+        results.dataset.tape, results.dataset.markets, results.dataset.events, "synthetic",
+        with_overrides(settings, [f"min_releases={used}"]))
+    assert "exploratory because" not in tables_markdown(enough)
 
 
 def test_tables_carry_the_letter_and_the_label_of_their_data(run, tmp_path):

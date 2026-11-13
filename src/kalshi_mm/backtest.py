@@ -42,6 +42,7 @@ from kalshi_mm.quoting import (
     Policy,
     Premiums,
     QuoteParams,
+    decision_minutes,
     estimate_premiums,
     quote_prices,
     realized_logit_vol,
@@ -58,7 +59,7 @@ __all__ = [
 ]
 
 _PRICE_TOL = 1e-9  # prices closer than this are the same price
-_PREMIUM_POLICIES = ("pooled_premium", "release_aware")
+_PREMIUM_POLICIES = ("pooled_premium", "flat_matched", "release_aware")
 
 
 @dataclass(frozen=True)
@@ -170,7 +171,7 @@ def prepare_market(
         size=c,
         mid=np.asarray(mid, dtype=np.float64),
         vol=np.asarray(vol, dtype=np.float64),
-        tau_min=(window - refresh * steps[:-1]) / 60.0,
+        tau_min=decision_minutes(params),
         first=live_edge[:-1],
         split=known_edge[1:],
         stop=live_edge[1:],
@@ -349,7 +350,9 @@ def walk_forward(
 
     * the premiums are :func:`kalshi_mm.quoting.estimate_premiums` of the trade markouts
       (:func:`kalshi_mm.markout.trade_markouts`, horizon ``params.horizon_s``) of the events whose
-      ``release_ts`` is at or before the start of ``e``'s window, ``release_ts - window``;
+      ``release_ts`` is at or before the start of ``e``'s window, ``release_ts - window``; the
+      matched premium of ``flat_matched`` averages the bucket premiums over the decisions of the
+      window (:func:`kalshi_mm.quoting.decision_minutes`);
     * ``sigma_floor`` is the mean of the defined :func:`kalshi_mm.quoting.realized_logit_vol` over
       the decision times of the windows of those same events (all their markets pooled), or
       ``sigma_default`` when there is no such value;
@@ -429,7 +432,8 @@ def walk_forward(
     rows_before = np.concatenate(([0], np.cumsum(np.bincount(row_rank, minlength=n_events))))
 
     needs_premiums = any(policy in _PREMIUM_POLICIES for policy in policies)
-    no_premiums = Premiums(0.0, (0.0,) * len(BUCKET_LABELS), 0)
+    minutes = decision_minutes(params)
+    no_premiums = Premiums(0.0, (0.0,) * len(BUCKET_LABELS), 0, 0.0)
     rows: list[dict] = []
     current = -1
     premiums, sigma_floor = no_premiums, params.sigma_default
@@ -441,6 +445,7 @@ def walk_forward(
                 premiums = estimate_premiums(
                     sorted_markouts.iloc[: rows_before[earlier]],
                     min_events=params.min_history_events,
+                    minutes=minutes,
                 )
             has_vol = vol_count_before[earlier] > 0
             sigma_floor = (

@@ -13,7 +13,9 @@ from kalshi_mm.quoting import (
     Premiums,
     QuoteParams,
     _bucket_of,
+    decision_minutes,
     estimate_premiums,
+    matched_premium,
     quote_prices,
     realized_logit_vol,
 )
@@ -23,8 +25,10 @@ NAN = float("nan")
 # k = 40 makes the constant part of the half-spread (1 / gamma) ln(1 + gamma / k) = 0.0249994, the
 # middle of a tick interval, so the rounded quotes of the hand examples are not on a knife edge
 HAND = QuoteParams(gamma=0.002, k=40.0)
-PREMIUMS = Premiums(pooled=0.05, by_bucket=(0.10, 0.08, 0.06, 0.04, 0.03, 0.02, 0.01), n_events=40)
-ZERO = Premiums(0.0, (0.0,) * 7, 0)
+PREMIUMS = Premiums(
+    pooled=0.05, by_bucket=(0.10, 0.08, 0.06, 0.04, 0.03, 0.02, 0.01), n_events=40, matched=0.04
+)
+ZERO = Premiums(0.0, (0.0,) * 7, 0, 0.0)
 
 
 def quote(policy, m, q, tau, sigma, premiums=PREMIUMS, params=HAND):
@@ -32,8 +36,10 @@ def quote(policy, m, q, tau, sigma, premiums=PREMIUMS, params=HAND):
 
 
 # ------------------------------------------------------------------------------- parameters
-def test_the_policies_are_the_four_of_the_model():
-    assert POLICIES == ("always_on", "pull_only", "pooled_premium", "release_aware")
+def test_the_policies_are_the_five_of_the_model():
+    assert POLICIES == (
+        "always_on", "pull_only", "pooled_premium", "flat_matched", "release_aware"
+    )
 
 
 def test_default_parameters_are_those_of_the_protocol():
@@ -43,7 +49,7 @@ def test_default_parameters_are_those_of_the_protocol():
     assert (p.min_mid, p.max_mid, p.window_hours) == (0.03, 0.97, 12.0)
     assert (p.vol_lookback_s, p.stale_s, p.horizon_s) == (7200.0, 3600.0, 300.0)
     assert (p.min_history_events, p.sigma_default) == (20, 0.1)
-    assert (p.maker_fee_coeff, p.fill_rule) == (0.0175, "through")
+    assert (p.maker_fee_coeff, p.fill_rule, p.flat_scale) == (0.0175, "through", 1.0)
     with pytest.raises(AttributeError):  # frozen
         p.gamma = 1.0
 
@@ -56,6 +62,7 @@ def test_default_parameters_are_those_of_the_protocol():
         {"tick": 0.0}, {"min_mid": 0.5, "max_mid": 0.5}, {"max_mid": 1.2}, {"window_hours": 0.0},
         {"fill_rule": "near"}, {"min_history_events": -1}, {"pull_minutes": -1.0},
         {"maker_fee_coeff": -0.1}, {"horizon_s": 0.0}, {"stale_s": float("inf")},
+        {"flat_scale": 0.0}, {"flat_scale": -1.0}, {"flat_scale": float("nan")},
     ],
 )
 def test_invalid_parameters_are_refused(change):
@@ -70,6 +77,9 @@ def test_premiums_need_one_entry_per_bucket_and_finite_values():
         Premiums(float("nan"), (0.0,) * 7, 5)
     with pytest.raises(ValueError):
         Premiums(0.01, (0.0, 0.0, 0.0, float("inf"), 0.0, 0.0, 0.0), 5)
+    with pytest.raises(ValueError):
+        Premiums(0.01, (0.0,) * 7, 5, float("nan"))
+    assert Premiums(0.01, (0.0,) * 7, 5).matched is None
 
 
 # ------------------------------------------------------------------- hand-computed quotes
@@ -108,6 +118,7 @@ def test_pull_window_edge_belongs_to_the_window():
     assert quote("pull_only", 0.5, 0.0, 0.001, 0.1) is None
     assert quote("always_on", 0.5, 0.0, 5.0, 0.1) == (0.47, 0.53)  # the others stay
     assert quote("pooled_premium", 0.5, 0.0, 1.0, 0.1) is not None
+    assert quote("flat_matched", 0.5, 0.0, 1.0, 0.1) is not None
     assert quote("release_aware", 0.5, 0.0, 1.0, 0.1) is not None
     wide = QuoteParams(k=40.0, pull_minutes=30.0)
     assert quote("pull_only", 0.5, 0.0, 30.0, 0.1, params=wide) is None
@@ -133,6 +144,30 @@ def test_release_aware_uses_the_premium_of_the_bucket_of_tau():
     assert quote("pooled_premium", 0.5, 0.0, 100.0, 0.1) == (0.42, 0.58)
 
 
+def test_flat_matched_quotes_the_matched_premium_whatever_the_minutes_to_the_release():
+    # matched 0.04: h = 4 * 0.25 * 0.04 = 0.04, v = 6.25e-4 + 0.25, gamma v = 0.00050125 and
+    # delta / 2 = 0.02525: bid 0.5 - 0.06525 = 0.43475 -> 0.43, ask 0.56525 -> 0.57
+    for tau in (3.0, 100.0, 500.0):
+        assert quote("flat_matched", 0.5, 0.0, tau, 0.1) == (0.43, 0.57)
+    # q = 60: r = 0.5 - 60 * 0.00050125 = 0.469925, bid 0.404675 -> 0.40, ask 0.535175 -> 0.54
+    assert quote("flat_matched", 0.5, 60.0, 100.0, 0.1) == (0.40, 0.54)
+    # flat_scale multiplies the premium: 3 gives h = 0.12, bid 0.5 - 0.14525 = 0.35475 -> 0.35
+    triple = QuoteParams(gamma=0.002, k=40.0, flat_scale=3.0)
+    assert quote("flat_matched", 0.5, 0.0, 100.0, 0.1, params=triple) == (0.35, 0.65)
+    # only flat_matched reads the scale and the matched premium
+    assert quote("pooled_premium", 0.5, 0.0, 100.0, 0.1, params=triple) == (0.42, 0.58)
+    assert quote("release_aware", 0.5, 0.0, 100.0, 0.1, params=triple) == (0.44, 0.56)
+
+
+def test_flat_matched_needs_the_matched_premium():
+    without = Premiums(0.05, (0.10, 0.08, 0.06, 0.04, 0.03, 0.02, 0.01), 40)
+    with pytest.raises(ValueError, match="matched"):
+        quote("flat_matched", 0.5, 0.0, 60.0, 0.1, without)
+    # the other policies do not need it
+    assert quote("pooled_premium", 0.5, 0.0, 60.0, 0.1, without) == (0.42, 0.58)
+    assert quote("release_aware", 0.5, 0.0, 60.0, 0.1, without) is not None
+
+
 @pytest.mark.parametrize(
     ("tau", "bucket"),
     [(0.5, 0), (5.0, 0), (5.0001, 1), (15.0, 1), (15.0001, 2), (30.0, 2), (30.0001, 3),
@@ -155,16 +190,16 @@ def test_buckets_have_one_premium_each_in_the_order_of_the_labels():
     assert len(PREMIUMS.by_bucket) == len(BUCKET_LABELS) == 7
 
 
-def test_release_aware_equals_pooled_when_every_bucket_premium_is_equal():
+def test_the_premium_policies_agree_when_every_premium_is_equal():
     rng = np.random.default_rng(11)
     for _ in range(300):
         level = float(rng.uniform(0.0, 0.2))
-        same = Premiums(level, (level,) * 7, 50)
+        same = Premiums(level, (level,) * 7, 50, level)
         m, q = float(rng.uniform(0.03, 0.97)), float(rng.uniform(-150, 150))
         tau, sigma = float(rng.uniform(0.01, 800.0)), float(rng.uniform(0.0, 3.0))
-        assert quote("release_aware", m, q, tau, sigma, same) == quote(
-            "pooled_premium", m, q, tau, sigma, same
-        )
+        pooled = quote("pooled_premium", m, q, tau, sigma, same)
+        assert quote("release_aware", m, q, tau, sigma, same) == pooled
+        assert quote("flat_matched", m, q, tau, sigma, same) == pooled
 
 
 def test_the_premium_policies_differ_when_the_bucket_premiums_differ():
@@ -190,12 +225,13 @@ def test_the_spread_and_the_reservation_price_are_those_of_avellaneda_and_stoiko
     for policy, extra_variance, premium in (
         ("always_on", 0.0, 0.0),
         ("pooled_premium", mm, 4 * mm * 0.03),
+        ("flat_matched", mm, 4 * mm * 0.03),
     ):
         v = (sigma * mm) ** 2 * (tau / 60.0) + extra_variance
         r = m - q * 0.01 * v
         delta = 0.01 * v + (2.0 / 0.01) * math.log(1.0 + 0.01 / 25.0)
         bid, ask = quote_prices(
-            policy, m, q, tau, sigma, Premiums(0.03, (0.03,) * 7, 30), fine
+            policy, m, q, tau, sigma, Premiums(0.03, (0.03,) * 7, 30, 0.03), fine
         )
         assert bid <= r - delta / 2 - premium < bid + 1e-6 + 1e-12
         assert ask - 1e-6 - 1e-12 < r + delta / 2 + premium <= ask
@@ -222,10 +258,10 @@ def test_the_quote_moves_down_with_inventory_and_up_with_the_premium():
     for policy in POLICIES:  # and it does move (large volatility and a long horizon)
         low, high = quote(policy, 0.5, -90.0, 600.0, 2.0), quote(policy, 0.5, 90.0, 600.0, 2.0)
         assert low[0] > high[0] and low[1] > high[1]
-    for policy in ("pooled_premium", "release_aware"):
+    for policy in ("pooled_premium", "flat_matched", "release_aware"):
         previous = None
         for level in (0.0, 0.02, 0.05, 0.1, 0.2):
-            same = Premiums(level, (level,) * 7, 50)
+            same = Premiums(level, (level,) * 7, 50, level)
             bid, ask = quote(policy, 0.5, 0.0, 20.0, 0.3, same)
             if previous is not None:
                 assert bid <= previous[0] and ask >= previous[1]
@@ -236,11 +272,11 @@ def test_the_quote_moves_down_with_inventory_and_up_with_the_premium():
 def test_quotes_are_on_the_tick_grid_inside_the_range_and_a_tick_apart():
     rng = np.random.default_rng(5)
     for _ in range(3000):
-        policy = POLICIES[int(rng.integers(4))]
+        policy = POLICIES[int(rng.integers(len(POLICIES)))]
         got = quote(
             policy, float(rng.uniform(0.03, 0.97)), float(rng.uniform(-99.0, 99.0)),
             float(rng.uniform(5.01, 900.0)), float(rng.uniform(0.0, 6.0)),
-            Premiums(0.0, tuple(rng.uniform(0.0, 0.3, 7)), 30),
+            Premiums(0.0, tuple(rng.uniform(0.0, 0.3, 7)), 30, float(rng.uniform(0.0, 0.3))),
         )
         bid, ask = got
         for price in (bid, ask):
@@ -313,9 +349,9 @@ def test_the_side_that_remains_at_the_limit_is_the_unconstrained_quote_of_that_s
 
 
 def test_a_floored_premium_of_zero_is_the_same_as_no_premium():
-    assert quote("pooled_premium", 0.5, 0.0, 60.0, 0.1, ZERO) == quote(
-        "release_aware", 0.5, 0.0, 60.0, 0.1, ZERO
-    )
+    pooled = quote("pooled_premium", 0.5, 0.0, 60.0, 0.1, ZERO)
+    assert pooled == quote("release_aware", 0.5, 0.0, 60.0, 0.1, ZERO)
+    assert pooled == quote("flat_matched", 0.5, 0.0, 60.0, 0.1, ZERO)
 
 
 def expected_quote(policy, m, q, tau, sigma, premiums, p):
@@ -323,11 +359,13 @@ def expected_quote(policy, m, q, tau, sigma, premiums, p):
     mm = m * (1.0 - m)
     v = (sigma * mm) ** 2 * tau / 60.0
     h = 0.0
-    if policy in ("pooled_premium", "release_aware"):
+    if policy in ("pooled_premium", "flat_matched", "release_aware"):
         v += mm
-        rate = premiums.pooled if policy == "pooled_premium" else premiums.by_bucket[
-            int(bucket_index(tau))
-        ]
+        rate = {
+            "pooled_premium": premiums.pooled,
+            "flat_matched": premiums.matched * p.flat_scale,
+            "release_aware": premiums.by_bucket[int(bucket_index(tau))],
+        }[policy]
         h = 4.0 * mm * rate
     r = m - q * p.gamma * v
     delta = p.gamma * v + 2.0 / p.gamma * np.log1p(p.gamma / p.k)
@@ -349,10 +387,12 @@ def expected_quote(policy, m, q, tau, sigma, premiums, p):
 def test_quote_prices_equals_the_formulas_on_random_inputs(tick):
     """Differential test against numpy and :func:`kalshi_mm.logit.round_to_tick`."""
     rng = np.random.default_rng(17)
-    params = QuoteParams(gamma=0.004, k=60.0, tick=tick, max_position=80.0)
+    params = QuoteParams(gamma=0.004, k=60.0, tick=tick, max_position=80.0,
+                         flat_scale=float(rng.uniform(0.5, 2.0)))
     for _ in range(4000):
-        policy = POLICIES[int(rng.integers(4))]
-        premiums = Premiums(float(rng.uniform(0, 0.2)), tuple(rng.uniform(0.0, 0.3, 7)), 30)
+        policy = POLICIES[int(rng.integers(len(POLICIES)))]
+        premiums = Premiums(float(rng.uniform(0, 0.2)), tuple(rng.uniform(0.0, 0.3, 7)), 30,
+                            float(rng.uniform(0.0, 0.3)))
         args = (
             float(rng.uniform(0.03, 0.97)), float(rng.uniform(-120, 120)),
             float(rng.uniform(5.01, 1000.0)), float(rng.uniform(0.0, 4.0)),
@@ -492,6 +532,91 @@ def test_premiums_equal_a_plain_loop_on_the_markouts_of_a_world():
     for b in range(7):
         want = max(0.0, sums[b] / counts[b]) if counts[b] else pooled
         assert got.by_bucket[b] == pytest.approx(want, abs=1e-12)
+
+
+# ------------------------------------------------------- decision_minutes and matched_premium
+def test_decision_minutes_counts_the_refreshes_back_from_the_window_start():
+    assert decision_minutes(QuoteParams(window_hours=0.1, k=40.0)).tolist() == [
+        6.0, 5.0, 4.0, 3.0, 2.0, 1.0]
+    # 600 s refreshes in one hour: six decisions, 60, 50, ..., 10 minutes before the release
+    every_ten = QuoteParams(window_hours=1.0, refresh_s=600.0)
+    assert decision_minutes(every_ten).tolist() == [60.0, 50.0, 40.0, 30.0, 20.0, 10.0]
+    # 1500 s does not divide the hour: ceil(2.4) = 3 decisions, at 3600, 2100 and 600 s
+    uneven = QuoteParams(window_hours=1.0, refresh_s=1500.0)
+    assert decision_minutes(uneven).tolist() == [60.0, 35.0, 10.0]
+    # a refresh longer than the window still has the decision at the start
+    assert decision_minutes(QuoteParams(window_hours=0.5, refresh_s=3600.0)).tolist() == [30.0]
+    default = decision_minutes(QuoteParams())
+    assert default.size == 720 and default[0] == 720.0 and default[-1] == 1.0
+    assert np.all(np.diff(default) == -1.0)
+
+
+def test_matched_premium_is_the_mean_of_the_premium_of_the_bucket_of_each_decision():
+    by_bucket = (0.10, 0.08, 0.06, 0.04, 0.03, 0.02, 0.01)
+    # buckets 0, 1, 4 and 6
+    assert matched_premium(by_bucket, [3.0, 10.0, 100.0, 400.0]) == pytest.approx(0.055, abs=1e-15)
+    # the default window: 5, 10, 15, 30, 120, 180 and 360 refreshes fall in the seven buckets
+    weights = (5, 10, 15, 30, 120, 180, 360)
+    want = sum(w * x for w, x in zip(weights, by_bucket, strict=True)) / 720.0
+    assert want == pytest.approx(14.2 / 720.0, abs=1e-15)
+    assert matched_premium(by_bucket, decision_minutes(QuoteParams())) == pytest.approx(
+        want, abs=1e-15)
+    # the pooled and the matched premium of one set of buckets are different numbers
+    assert matched_premium(by_bucket, decision_minutes(QuoteParams())) != 0.05
+
+
+def test_matched_premium_of_equal_premiums_is_that_premium_and_edges_are_right_closed():
+    assert matched_premium((0.03,) * 7, [1.0, 50.0, 700.0]) == pytest.approx(0.03, abs=1e-15)
+    by_bucket = (1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0)
+    for tau, want in ((5.0, 1.0), (5.0001, 2.0), (15.0, 2.0), (30.0, 3.0), (60.0, 4.0),
+                      (180.0, 5.0), (360.0, 6.0), (360.0001, 7.0), (1e6, 7.0)):
+        assert matched_premium(by_bucket, [tau]) == want
+
+
+def test_matched_premium_refuses_anything_but_positive_times_and_seven_premiums():
+    by_bucket = (0.1,) * 7
+    for bad in ([], [0.0, 5.0], [-1.0], [NAN], [[1.0, 2.0]]):
+        with pytest.raises(ValueError, match="minutes"):
+            matched_premium(by_bucket, bad)
+    with pytest.raises(ValueError, match="by_bucket"):
+        matched_premium((0.1,) * 6, [3.0])
+
+
+def test_estimate_premiums_gives_the_matched_premium_when_it_has_the_decisions():
+    minutes = [3.0, 10.0, 100.0, 400.0]  # buckets 0, 1, 4 and 6
+    got = estimate_premiums(markout_frame(HAND_ROWS), min_events=3, minutes=minutes)
+    pooled = 0.07 / 6
+    # bucket 0 has 0.11 / 3; buckets 1, 4 and 6 have no usable trade and take the pooled premium
+    assert got.matched == pytest.approx((0.11 / 3 + 3 * pooled) / 4, abs=1e-15)
+    assert got.matched == pytest.approx(matched_premium(got.by_bucket, minutes), abs=1e-15)
+    assert got.matched != pytest.approx(got.pooled, abs=1e-3)  # time average, not trade average
+    assert estimate_premiums(markout_frame(HAND_ROWS), min_events=3).matched is None
+    floored = estimate_premiums(markout_frame(HAND_ROWS), min_events=3, floor=0.02,
+                                minutes=minutes)
+    assert floored.matched == pytest.approx((0.11 / 3 + 3 * 0.02) / 4, abs=1e-15)
+
+
+def test_the_matched_premium_is_zero_without_history_and_the_floor_without_usable_trades():
+    below = estimate_premiums(markout_frame(HAND_ROWS), min_events=4, minutes=[1.0, 2.0])
+    assert below == Premiums(0.0, (0.0,) * 7, 3, 0.0)
+    rows = [("E1", 0, 0.99, 0.5), ("E2", 1, NAN, 0.5), ("E3", 2, 0.5, NAN)]
+    assert estimate_premiums(markout_frame(rows), min_events=3, minutes=[1.0]) == Premiums(
+        0.0, (0.0,) * 7, 3, 0.0)
+    assert estimate_premiums(markout_frame(rows), min_events=3, floor=0.01, minutes=[1.0]) == (
+        Premiums(0.01, (0.01,) * 7, 3, 0.01))
+
+
+def test_the_matched_premium_equals_a_plain_loop_over_the_decisions_of_a_world():
+    world = generate_world(WorldParams(n_events=24, window_hours=6.0), 3)
+    tape = world.tape.drop(columns=[c for c in world.tape.columns if c.startswith("latent_")])
+    markouts = trade_markouts(tape, world.events, world.markets)
+    params = QuoteParams(window_hours=3.0, refresh_s=90.0)
+    got = estimate_premiums(markouts, min_events=10, minutes=decision_minutes(params))
+    total = 0.0
+    for j in range(120):  # 3 hours of 90 s refreshes
+        tau = (3.0 * 3600.0 - 90.0 * j) / 60.0
+        total += got.by_bucket[int(bucket_index(tau))]
+    assert got.matched == pytest.approx(total / 120.0, abs=1e-12)
 
 
 # ---------------------------------------------------------------------- realized_logit_vol

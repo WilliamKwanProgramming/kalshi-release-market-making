@@ -83,9 +83,13 @@ def _diff_row(name: str, diff: dict[str, Any] | None, note: str = "") -> list[st
 def _sample_table(results: Results, prefix: str, label: str, deviations: Sequence[str]) -> str:
     s, counts = results.settings, results.dataset.counts
     n_rel = counts["releases kept"]
+    n_p2 = results.p2["n_releases"]
     note = ""
     if n_rel < s.min_releases:
-        note += f" With fewer than {s.min_releases} releases, P1 and P2 are exploratory."
+        note += f" P1 is exploratory because fewer than {s.min_releases} releases enter it."
+    if n_p2 < s.min_releases:
+        note += (f" P2 is exploratory because fewer than {s.min_releases} releases enter it "
+                 f"({n_p2:,} after the burn-in).")
     if deviations:
         note += " Departures from docs/protocol.md: " + "; ".join(deviations) + "."
     rows = [[k.capitalize(), f"{v:,}"] for k, v in counts.items()]

@@ -296,13 +296,17 @@ def p1_adverse_selection(ds: Dataset, settings: Settings = DEFAULT) -> dict[str,
     }
 
 
-PRIMARY_PAIR = ("release_aware", "pooled_premium")
+PRIMARY_PAIR = ("release_aware", "flat_matched")
 PAIRS = (
     PRIMARY_PAIR,
+    ("release_aware", "pooled_premium"),
+    ("flat_matched", "pooled_premium"),
     ("always_on", "pooled_premium"),
+    ("always_on", "flat_matched"),
     ("always_on", "release_aware"),
     ("pull_only", "always_on"),
     ("pull_only", "pooled_premium"),
+    ("pull_only", "flat_matched"),
     ("pull_only", "release_aware"),
 )
 
@@ -342,14 +346,19 @@ def _primary_difference(frame: pd.DataFrame, settings: Settings) -> dict[str, An
 
 
 def p2_pricing(ds: Dataset, settings: Settings = DEFAULT) -> dict[str, Any]:
-    """P2 of docs/protocol.md: does a premium by minutes to release beat a pooled premium?
+    """P2 of docs/protocol.md: does a premium by minutes to release beat a flat premium of the
+    same average size?
 
-    The walk-forward backtest (docs/model.md sections 6 and 7) runs the four policies. The tested
+    The walk-forward backtest (docs/model.md sections 6 and 7) runs the five policies. The tested
     quantity is the net settled P&L per release (sum over its markets) of ``release_aware`` minus
-    ``pooled_premium``, paired by release, over the releases after the burn-in. Reported, not
-    tested: every other pair of policies, each policy's totals, the primary difference by series
-    and in the two halves of the sample split at the median release time, and the primary
-    difference with the touch fill rule and with maker fee coefficient 0.
+    ``flat_matched``, paired by release, over the releases after the burn-in. ``flat_matched``
+    quotes the average of the bucket premiums over the quoting window, so the two policies differ
+    in when a premium is applied and not in how large it is on average. Reported, not tested: every
+    other pair of policies (among them ``release_aware`` minus ``pooled_premium``, the comparison
+    of the first version of the protocol, whose sign follows the level of the pooled premium), each
+    policy's totals, the primary difference by series and in the two halves of the sample split at
+    the median release time, and the primary difference with the touch fill rule and with maker fee
+    coefficient 0.
     """
     frame = walk_forward(ds.tape, ds.markets, ds.events, POLICIES, settings.quote)
     frame = frame.assign(original_series=frame["market"].map(ds.market_series))
@@ -465,8 +474,9 @@ def family(p1: dict[str, Any], p2: dict[str, Any], p3: dict[str, Any], n_release
     """The three tests as one family: raw p-values, Holm-adjusted p-values and the verdicts.
 
     A test that cannot be computed counts as p = 1 in the family. ``supported`` needs a
-    Holm-adjusted p-value below ``settings.alpha``; P1 and P2 are labelled exploratory instead when
-    the sample has fewer than ``settings.min_releases`` releases (docs/protocol.md).
+    Holm-adjusted p-value below ``settings.alpha``. P1 and P2 are labelled exploratory instead when
+    fewer than ``settings.min_releases`` releases enter the test (docs/protocol.md): P1 uses the
+    ``n_releases`` releases kept, P2 the ``p2["n_releases"]`` releases after the burn-in.
     """
     raw = {
         "P1": p1["primary"]["p_one_sided"],
@@ -474,11 +484,11 @@ def family(p1: dict[str, Any], p2: dict[str, Any], p3: dict[str, Any], n_release
         "P3": None if p3["primary"] is None else p3["primary"]["p_one_sided"],
     }
     adjusted = holm_adjust([1.0 if v is None else v for v in raw.values()])
-    exploratory = n_releases < settings.min_releases
+    used = {"P1": n_releases, "P2": p2["n_releases"]}  # P3 is never labelled exploratory
     out = {}
     for (name, p), adj in zip(raw.items(), adjusted, strict=True):
         label = "not computed" if p is None else (
-            "exploratory" if exploratory and name != "P3"
+            "exploratory" if name in used and used[name] < settings.min_releases
             else ("supported" if adj < settings.alpha else "not supported")
         )
         out[name] = {"p_one_sided": p, "p_holm": float(adj), "verdict": label}

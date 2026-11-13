@@ -323,13 +323,14 @@ def test_p3_needs_more_releases_than_the_minimum_for_a_first_fit():
     assert "did not converge" in p3_recalibration(data, one_more)["error"]
 
 
-def _tests(p1, p2, p3):
-    """The three ``primary`` entries of P1 to P3 with the given one-sided p-values (None: none)."""
+def _tests(p1, p2, p3, n_p2=150):
+    """The three ``primary`` entries of P1 to P3 with the given one-sided p-values (None: none);
+    P2 also has the number of releases it used."""
 
     def wrap(p):
         return {"primary": None if p is None else {"p_one_sided": p}}
 
-    return wrap(p1), wrap(p2), wrap(p3)
+    return wrap(p1), {**wrap(p2), "n_releases": n_p2}, wrap(p3)
 
 
 def test_family_adjusts_by_holm_and_calls_a_test_supported_below_alpha():
@@ -350,14 +351,28 @@ def test_family_needs_the_adjusted_p_value_strictly_below_alpha():
 
 
 def test_family_labels_p1_and_p2_exploratory_below_the_minimum_number_of_releases():
-    below = family(*_tests(0.001, 0.001, 0.001), DEFAULT.min_releases - 1, DEFAULT)
+    n = DEFAULT.min_releases
+    below = family(*_tests(0.001, 0.001, 0.001, n_p2=n - 1), n - 1, DEFAULT)
     assert [below[k]["verdict"] for k in ("P1", "P2", "P3")] == [
         "exploratory", "exploratory", "supported"]
-    enough = family(*_tests(0.001, 0.001, 0.001), DEFAULT.min_releases, DEFAULT)
+    enough = family(*_tests(0.001, 0.001, 0.001, n_p2=n), n, DEFAULT)
     assert [enough[k]["verdict"] for k in ("P1", "P2", "P3")] == ["supported"] * 3
     fewer = dataclasses.replace(DEFAULT, min_releases=20)
-    assert family(*_tests(0.001, 0.001, 0.001), 20, fewer)["P1"]["verdict"] == "supported"
-    assert family(*_tests(0.001, 0.001, 0.001), 19, fewer)["P1"]["verdict"] == "exploratory"
+    assert family(*_tests(0.001, 0.001, 0.001, n_p2=20), 20, fewer)["P1"]["verdict"] == "supported"
+    assert family(*_tests(0.001, 0.001, 0.001, n_p2=19), 19, fewer)["P1"]["verdict"] == (
+        "exploratory")
+
+
+def test_family_counts_the_releases_that_each_test_uses():
+    n = DEFAULT.min_releases
+    # 110 releases kept, 20 of them burn-in: P1 uses 110, P2 uses 90
+    out = family(*_tests(0.001, 0.001, 0.001, n_p2=n - 10), n + 10, DEFAULT)
+    assert [out[k]["verdict"] for k in ("P1", "P2", "P3")] == [
+        "supported", "exploratory", "supported"]
+    # the number of releases kept does not rescue P2, and P2 does not condemn P1
+    out = family(*_tests(0.001, 0.001, 0.001, n_p2=n), n - 20, DEFAULT)
+    assert [out[k]["verdict"] for k in ("P1", "P2", "P3")] == [
+        "exploratory", "supported", "supported"]
 
 
 def test_family_counts_a_test_that_is_not_computed_as_p_equal_to_one():
@@ -366,7 +381,7 @@ def test_family_counts_a_test_that_is_not_computed_as_p_equal_to_one():
     # Holm over (0.01, 0.02, 1): 3 * 0.01, 2 * 0.02
     assert out["P1"]["p_holm"] == pytest.approx(0.03) and out["P3"]["p_holm"] == pytest.approx(0.04)
     assert out["P1"]["verdict"] == out["P3"]["verdict"] == "supported"
-    none = family(*_tests(0.5, 0.5, None), 10, DEFAULT)
+    none = family(*_tests(0.5, 0.5, None, n_p2=10), 10, DEFAULT)
     assert none["P3"]["verdict"] == "not computed" and none["P1"]["verdict"] == "exploratory"
 
 
