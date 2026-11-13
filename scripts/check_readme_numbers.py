@@ -64,6 +64,9 @@ CHECKS: list[tuple[str, str, str]] = [
     ("results/calibration/tables.md",
      "| 0.7 | 1000 | 950 | 1.05 (0.06) | 1.71 | 24.0 (3.0) |",
      "(0.7) and 1000 events it is supported in 24% of the datasets"),
+    # the mutation check
+    ("results/mutation_check.txt", "335 of 335 mutants caught.",
+     "335 hand-written mutants, all caught"),
     # the rehearsal (tables R2 to R8)
     ("results/rehearsal/rehearsal.manifest.txt", "world: 200 events of 30.0 hours",
      "a world of 200 events (30 hours of trading before each release)"),
