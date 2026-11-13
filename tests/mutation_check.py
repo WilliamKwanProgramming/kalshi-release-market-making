@@ -11,10 +11,11 @@ many were caught by a test that looks at the changed behaviour. The working tree
 The mutants are bugs that would silently produce plausible numbers: a sign, an off-by-one, a wrong
 tick direction, look-ahead, a wrong horizon or a unit error. They are one-line edits written by
 hand, not the output of a mutation tool. To save time a mutant runs only the test files that
-exercise the changed module (listed with it); the baseline runs the whole suite. Exits with status 1
-if a mutant survives or the baseline fails.
+exercise the changed module (listed with it); the baseline runs the whole suite (with --only, the
+files of the chosen mutants). Exits with status 1 if a mutant survives or the baseline fails.
 
 Usage: python3 tests/mutation_check.py [--out results/mutation_check.txt]
+       python3 tests/mutation_check.py --only TEXT [--only TEXT ...]   # a few mutants, no record
 """
 
 from __future__ import annotations
@@ -206,7 +207,7 @@ mutant("protocol: the recalibration price is taken minutes, not hours, ahead", P
 mutant("protocol: P3 needs one release more than the minimum to run", PROTO, "protocol.py",
        'if usable["release_ts"].nunique() <= settings.recal_min_releases:',
        'if usable["release_ts"].nunique() <= settings.recal_min_releases + 1:')
-mutant("protocol: P3 with no release that has enough earlier ones is an error", PROTO,
+mutant("protocol: no scored release is reported as a failed skill", PROTO,
        "protocol.py", "if walk.empty:", "if False:")
 mutant("protocol: the bootstrap seed is ignored", PROTO, "protocol.py",
        "np.random.default_rng(settings.seed)", "np.random.default_rng(0)")
@@ -222,7 +223,11 @@ mutant("protocol: the labels of the two sources are swapped", PROTO, "protocol.p
        'SOURCE_LABELS = {"synthetic": "synthetic data", "kalshi-public-api": "real data"}',
        'SOURCE_LABELS = {"synthetic": "real data", "kalshi-public-api": "synthetic data"}')
 mutant("protocol: the releases of the burn-in enter the comparison", PIPE, "protocol.py",
-       'evaluated = frame[frame["evaluated"]]', "evaluated = frame")
+       'evaluated = frame[frame["evaluated"]]\n    return evaluated.groupby',
+       "evaluated = frame\n    return evaluated.groupby")
+mutant("protocol: the totals of P2 average over the markets of the burn-in too", PIPE,
+       "protocol.py", 'evaluated = frame[frame["evaluated"]]\n    totals = {',
+       "evaluated = frame\n    totals = {")
 mutant("protocol: the P&L of a release is the mean over its markets", PIPE, "protocol.py",
        '.groupby(["event", "policy"])[column].sum()',
        '.groupby(["event", "policy"])[column].mean()')
@@ -265,7 +270,8 @@ mutant("run_real: a commit that differs from the tag is accepted", RR, "run_real
 mutant("run_real: the departures of the fetch record are not written", RR, "run_real.py",
        "extra: list[str] = provenance_problems(runs)", "extra: list[str] = []")
 mutant("report: the table of the checks of the data is left out", RR, "protocol_report.py",
-       "parts.append(_checks_table(data_checks, prefix, label))", "pass")
+       "parts.append(_checks_table(data_checks, prefix, label, s.max_off_tick_share))",
+       "pass")
 
 
 # ---- the markout panel computed in SQL (panel.py)
@@ -822,8 +828,6 @@ mutant("calibration: an infinite gap is accepted", CAL, "calibration.py",
        "if not (gap_hours >= 0.0):")
 mutant("protocol: the recalibration fit ignores the gap before the release", PROTO,
        "protocol.py", "gap_hours=settings.recal_hours,", "gap_hours=0.0,")
-mutant("protocol: no scored release is reported as a failed skill", PROTO, "protocol.py",
-       "if walk.empty:", "if False:")
 
 
 # ---- the scripts that paste the tables into the README and check the numbers there
@@ -866,15 +870,13 @@ mutant("quoting: inventory sign in the reservation price",
        "tests/test_quoting.py", "quoting.py",
        "reservation = mid - inventory * risk",
        "reservation = mid + inventory * risk")
+VARIANCE = "    if policy in PREMIUM_POLICIES:\n"
 mutant("quoting: release_aware without the jump variance term mm",
        "tests/test_quoting.py", "quoting.py",
-       ("        variance += mm\n        premium = 4.0 * mm * "
-        "premiums.by_bucket[_bucket_of(tau_minutes)]"),
-       "        premium = 4.0 * mm * premiums.by_bucket[_bucket_of(tau_minutes)]")
+       VARIANCE, '    if policy in ("pooled_premium", "flat_matched"):\n')
 mutant("quoting: pooled_premium without the jump variance term mm",
        "tests/test_quoting.py", "quoting.py",
-       "        variance += mm\n        premium = 4.0 * mm * premiums.pooled",
-       "        premium = 4.0 * mm * premiums.pooled")
+       VARIANCE, '    if policy in ("flat_matched", "release_aware"):\n')
 mutant("quoting: pull window edge: exactly 5 minutes is quoted",
        "tests/test_quoting.py", "quoting.py",
        "if policy == \"pull_only\" and tau_minutes <= params.pull_minutes:",
@@ -885,12 +887,12 @@ mutant("quoting: premium bucket lookup left-closed instead of right-closed",
        "return __import__(\"bisect\").bisect_right(BUCKET_EDGES_MIN, tau_minutes) - 1")
 mutant("quoting: release_aware uses the pooled premium",
        "tests/test_quoting.py", "quoting.py",
-       "premium = 4.0 * mm * premiums.by_bucket[_bucket_of(tau_minutes)]",
-       "premium = 4.0 * mm * premiums.pooled")
+       "return premiums.by_bucket[_bucket_of(tau_minutes)]",
+       "return premiums.pooled")
 mutant("quoting: premium without the factor 4",
        "tests/test_quoting.py", "quoting.py",
-       "premium = 4.0 * mm * premiums.pooled",
-       "premium = mm * premiums.pooled")
+       "premium = 4.0 * mm * premium_per_unit(policy, tau_minutes, premiums, params)",
+       "premium = mm * premium_per_unit(policy, tau_minutes, premiums, params)")
 mutant("quoting: premium estimate without the m(1-m) >= 0.05 filter",
        "tests/test_quoting.py", "quoting.py",
        "usable = (variance >= MIN_VARIANCE_SCALE) & np.isfinite(adverse) & (bucket >= 0)",
@@ -1113,8 +1115,12 @@ mutant("study: B2 gives the mean spread in USD under a heading of cents",
        '_num(s["spread"]),')
 mutant("study: per_event.csv without the mean spread",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
-       '"quotes_live_share", "mean_spread", "evaluated"]',
-       '"quotes_live_share", "evaluated"]')
+       '"quotes_live_share", "mean_spread", "fill_premium",\n               "evaluated"]',
+       '"quotes_live_share", "fill_premium",\n               "evaluated"]')
+mutant("study: per_event.csv without the premium at the fills",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       '"quotes_live_share", "mean_spread", "fill_premium",\n               "evaluated"]',
+       '"quotes_live_share", "mean_spread",\n               "evaluated"]')
 mutant("study: the reading of B2 names the policies in another order",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
        'for policy in ("release_aware", "flat_matched", "pooled_premium")\n        }',
@@ -1245,20 +1251,16 @@ mutant("backtest study: B8 is not written",
 # ---- flat_matched, the decision minutes and the matched premium, and the level-matched study
 QUOTE, BACKTEST = "tests/test_quoting.py", "tests/test_backtest.py"
 STUDY, STUDY_FILE = "tests/test_backtest_study.py", "experiments/backtest_study.py"
-FLAT = "premium = 4.0 * mm * premiums.matched * params.flat_scale"
+FLAT = "return premiums.matched * params.flat_scale"
 mutant("quoting: flat_matched without the jump variance term mm",
        QUOTE, "quoting.py",
-       "        variance += mm\n        " + FLAT,
-       "        " + FLAT)
-mutant("quoting: flat_matched premium without the factor 4",
-       QUOTE, "quoting.py",
-       FLAT, "premium = mm * premiums.matched * params.flat_scale")
+       VARIANCE, '    if policy in ("pooled_premium", "release_aware"):\n')
 mutant("quoting: flat_matched quotes the pooled premium",
        QUOTE, "quoting.py",
-       FLAT, "premium = 4.0 * mm * premiums.pooled * params.flat_scale")
+       FLAT, "return premiums.pooled * params.flat_scale")
 mutant("quoting: flat_matched ignores the scale of the flat premium",
        QUOTE, "quoting.py",
-       FLAT, "premium = 4.0 * mm * premiums.matched")
+       FLAT, "return premiums.matched")
 mutant("quoting: flat_matched is quoted without a matched premium",
        QUOTE, "quoting.py",
        "        if premiums.matched is None:\n            raise ValueError(",
@@ -1305,8 +1307,9 @@ mutant("quoting: the scale of the flat premium is not validated",
        "\"vol_lookback_s\", \"horizon_s\"):")
 mutant("backtest: flat_matched is not a policy that needs premiums",
        BACKTEST, "backtest.py",
-       "_PREMIUM_POLICIES = (\"pooled_premium\", \"flat_matched\", \"release_aware\")",
-       "_PREMIUM_POLICIES = (\"pooled_premium\", \"release_aware\")")
+       "needs_premiums = any(policy in PREMIUM_POLICIES for policy in policies)",
+       "needs_premiums = any(policy in (\"pooled_premium\", \"release_aware\") "
+       "for policy in policies)")
 mutant("backtest: the premiums are estimated without the decision minutes",
        BACKTEST, "backtest.py",
        "                    minutes=minutes,\n", "")
@@ -1339,8 +1342,9 @@ mutant("backtest study: the primary difference alone has the wrong sign",
        "return -pair_differences(events, PRIMARY)")
 mutant("backtest study: B9 runs flat_matched at the scale of the main grid",
        STUDY, STUDY_FILE,
-       "quote = replace(config.quote, flat_scale=scale)",
-       "quote = config.quote")
+       "for i, scale in enumerate(levels):\n            quote = replace(config.quote, "
+       "flat_scale=scale)",
+       "for i, scale in enumerate(levels):\n            quote = config.quote")
 mutant("backtest study: B9 bootstrap draws do not depend on the scale",
        STUDY, STUDY_FILE,
        "boot_rng(KIND_LEVEL, i, seed)",
@@ -1440,6 +1444,208 @@ mutant("backtest study: the manifest names the wrong bootstrap key of B9",
        "default_rng([{SEED}, {KIND_MAIN}, index of F, seed])")
 
 
+# ---- the premium at the fills, B10, the off-tick label and the tag date (second review)
+PER_UNIT = ('    if not tau_minutes > 0.0:\n'
+            '        raise ValueError("tau_minutes must be positive")\n'
+            '    if policy == "pooled_premium":\n')
+mutant("quoting: premium_per_unit accepts a policy that does not exist",
+       QUOTE, "quoting.py",
+       '    if policy not in POLICIES:\n        raise ValueError(f"policy must be one of {POLICIES}'
+       ', got {policy!r}")\n' + PER_UNIT, PER_UNIT)
+mutant("quoting: premium_per_unit accepts a time to the release of zero",
+       QUOTE, "quoting.py", PER_UNIT, '    if policy == "pooled_premium":\n')
+mutant("quoting: always_on and pull_only quote the pooled premium",
+       QUOTE, "quoting.py",
+       "        return premiums.by_bucket[_bucket_of(tau_minutes)]\n    return 0.0\n",
+       "        return premiums.by_bucket[_bucket_of(tau_minutes)]\n    return premiums.pooled\n")
+
+BID = "fill_prices.append(bid)\n                        premium_filled += take * unit"
+ASK = "fill_prices.append(ask)\n                    premium_filled += take * unit"
+mutant("backtest: the premium of a fill of the bid is not counted",
+       BACKTEST, "backtest.py", BID, "fill_prices.append(bid)")
+mutant("backtest: the premium of a fill of the ask is not counted",
+       BACKTEST, "backtest.py", ASK, "fill_prices.append(ask)")
+mutant("backtest: the premium of a fill of the bid is not weighted by its contracts",
+       BACKTEST, "backtest.py", BID,
+       "fill_prices.append(bid)\n                        premium_filled += unit")
+mutant("backtest: the premium of a fill of the ask is not weighted by its contracts",
+       BACKTEST, "backtest.py", ASK,
+       "fill_prices.append(ask)\n                    premium_filled += unit")
+mutant("backtest: the premium at the fills is the mean over the fills, not the contracts",
+       BACKTEST, "backtest.py",
+       "fill_premium=premium_filled / contracts if contracts > 0.0 else math.nan,",
+       "fill_premium=premium_filled / len(fill_contracts) if contracts > 0.0 else math.nan,")
+mutant("backtest: a market without a fill has a premium at the fills of zero",
+       BACKTEST, "backtest.py",
+       "fill_premium=premium_filled / contracts if contracts > 0.0 else math.nan,",
+       "fill_premium=premium_filled / contracts if contracts > 0.0 else 0.0,")
+mutant("backtest: the fills carry the premium of the first refresh",
+       BACKTEST, "backtest.py",
+       "unit = premium_per_unit(policy, taus[j], premiums, params)",
+       "unit = premium_per_unit(policy, taus[0], premiums, params)")
+mutant("backtest: mean_fill_premium is the mean over the rows, not over the contracts",
+       BACKTEST, "backtest.py",
+       "return float((premium[filled] * contracts[filled]).sum() / total)",
+       "return float(premium[filled].mean())")
+mutant("backtest: mean_fill_premium counts the rows without a fill",
+       BACKTEST, "backtest.py",
+       "    filled = contracts > 0.0\n    total = float(contracts[filled].sum())",
+       "    filled = contracts >= 0.0\n    total = float(contracts[filled].sum())")
+mutant("backtest: mean_fill_premium of rows without a fill is zero",
+       BACKTEST, "backtest.py",
+       "    if total <= 0.0:\n        return math.nan",
+       "    if total <= 0.0:\n        return 0.0")
+mutant("backtest: walk_forward has no column for the premium at the fills",
+       BACKTEST, "backtest.py",
+       '"mean_spread", "fill_premium",\n        "evaluated"', '"mean_spread",\n        "evaluated"')
+
+mutant("study: the premium at the fills of an event is not weighted by the contracts",
+       STUDY, STUDY_FILE,
+       'premium_filled=rows["fill_premium"].fillna(0.0) * rows["contracts"])',
+       'premium_filled=rows["fill_premium"].fillna(0.0))')
+# Removing fillna(0.0) from the premium at the fills of an event (event_table) is an equivalent
+# mutant, so it is not listed: a market without a fill has a NaN premium and no contracts, and the
+# sum over the markets of an event skips the NaN.
+mutant("study: the premium at the fills of an event is not divided by its contracts",
+       STUDY, STUDY_FILE,
+       'fill_premium[filled] = table["premium_filled"].to_numpy(dtype=float)[filled] / '
+       "contracts[filled]",
+       'fill_premium[filled] = table["premium_filled"].to_numpy(dtype=float)[filled]')
+mutant("study: the premium at the fills of a policy is the mean over its events",
+       STUDY, STUDY_FILE,
+       '"fill_premium": mean_fill_premium(done),',
+       '"fill_premium": float(done["fill_premium"].mean()),')
+mutant("study: B2 gives the premium at the fills in USD under a heading of cents",
+       STUDY, STUDY_FILE,
+       '_num(100.0 * s["spread"]), _num(100.0 * s["fill_premium"]),',
+       '_num(100.0 * s["spread"]), _num(s["fill_premium"]),')
+mutant("study: B10 compares the policies at F = 1",
+       STUDY, STUDY_FILE,
+       'd = primary_differences(pd.concat([first[first["policy"] == aware], second],\n'
+       '                                              ignore_index=True))',
+       "d = primary_differences(first)")
+mutant("study: F_eq is the premium at the fills of flat_matched over that of release_aware",
+       STUDY, STUDY_FILE,
+       "scale = config.quote.flat_scale * fill_aware / fill_base",
+       "scale = config.quote.flat_scale * fill_base / fill_aware")
+mutant("study: F_eq replaces the scale of the main grid instead of multiplying it",
+       STUDY, STUDY_FILE,
+       "scale = config.quote.flat_scale * fill_aware / fill_base",
+       "scale = fill_aware / fill_base")
+mutant("study: B10 runs on a dataset in which flat_matched has no premium at its fills",
+       STUDY, STUDY_FILE,
+       "if not (fill_aware > 0.0 and fill_base > 0.0):  # NaN fails both",
+       "if not (fill_aware > 0.0 or fill_base > 0.0):  # NaN fails both")
+mutant("study: B10 runs on a dataset in which no policy has a premium at its fills",
+       STUDY, STUDY_FILE,
+       "if not (fill_aware > 0.0 and fill_base > 0.0):  # NaN fails both",
+       "if False:  # NaN fails both")
+mutant("study: B10 bootstrap draws do not depend on the world",
+       STUDY, STUDY_FILE,
+       "boot_rng(KIND_FILLS, w, seed)", "boot_rng(KIND_FILLS, 0, seed)")
+mutant("study: B10 bootstrap draws share the stream of B9",
+       STUDY, STUDY_FILE,
+       "boot_rng(KIND_FILLS, w, seed)", "boot_rng(KIND_LEVEL, w, seed)")
+mutant("study: the bootstrap stream of B10 is the stream of B9",
+       STUDY, STUDY_FILE,
+       "1, 2, 3, 4, 5, 6, 7\n)", "1, 2, 3, 4, 5, 6, 6\n)")
+mutant("study: the premium of flat_matched at F_eq is the one of the first run",
+       STUDY, STUDY_FILE,
+       '"fill_flat": mean_fill_premium(second[second["evaluated"]]),',
+       '"fill_flat": fill_base,')
+mutant("study: the smallest F_eq of a world is the largest",
+       STUDY, STUDY_FILE,
+       '"flat_scale_min": float(part["flat_scale"].min()),',
+       '"flat_scale_min": float(part["flat_scale"].max()),')
+mutant("study: the reading of B10 gives the premium of flat_matched at F = 1 as the one at F_eq",
+       STUDY, STUDY_FILE,
+       'f"({_num(aware)} and {_num(flat)} cents) and {_earned(s[\'mean\'])} (mean of {n} "',
+       'f"({_num(aware)} and {_num(base)} cents) and {_earned(s[\'mean\'])} (mean of {n} "')
+mutant("study: the manifest names the wrong bootstrap key of B10",
+       STUDY, STUDY_FILE,
+       "default_rng([{SEED}, {KIND_FILLS}, index of the world, seed])",
+       "default_rng([{SEED}, {KIND_MAIN}, index of the world, seed])")
+
+PIPES = "tests/test_protocol.py tests/test_pipeline.py"
+mutant("protocol: the scaled run of P2 needs a premium at the fills of one policy only",
+       PIPES, "protocol.py",
+       "if fill_first > 0.0 and fill_second > 0.0:  # a NaN fails both",
+       "if fill_first > 0.0 or fill_second > 0.0:  # a NaN fails both")
+mutant("protocol: the flat premium of P2 is scaled by the inverse of the ratio",
+       PIPES, "protocol.py",
+       "scale = settings.quote.flat_scale * fill_first / fill_second",
+       "scale = settings.quote.flat_scale * fill_second / fill_first")
+mutant("protocol: the scale of the flat premium of P2 replaces the one of the settings",
+       PIPES, "protocol.py",
+       "scale = settings.quote.flat_scale * fill_first / fill_second",
+       "scale = fill_first / fill_second")
+mutant("protocol: a share of the trades off the tick equal to the limit labels P2 exploratory",
+       PIPES, "protocol.py",
+       "off_tick_share > settings.max_off_tick_share",
+       "off_tick_share >= settings.max_off_tick_share")
+mutant("protocol: an unknown share of the trades off the tick labels P2 exploratory",
+       PIPES, "protocol.py",
+       "coarse = off_tick_share is not None and off_tick_share > settings.max_off_tick_share",
+       "coarse = off_tick_share is None or off_tick_share > settings.max_off_tick_share")
+mutant("protocol: a share of the trades off the tick above the limit labels P1 and P3 too",
+       PIPES, "protocol.py",
+       'name == "P2" and coarse)', "coarse)")
+mutant("protocol: the limit of the share of the trades off the tick is 50%",
+       PIPES, "protocol.py",
+       "max_off_tick_share: float = 0.05", "max_off_tick_share: float = 0.5")
+mutant("protocol: the family does not get the share of the trades off the tick",
+       PIPES, "protocol.py",
+       'family(p1, p2, p3, ds.counts["releases kept"], settings, off_tick_share),',
+       'family(p1, p2, p3, ds.counts["releases kept"], settings),')
+mutant("protocol: the results do not keep the share of the trades off the tick",
+       PIPES, "protocol.py",
+       "deviations(settings), off_tick_share,", "deviations(settings), None,")
+mutant("report: the sample table names a share equal to the limit as above it",
+       PIPE, "protocol_report.py",
+       "if share is not None and share > s.max_off_tick_share:",
+       "if share is not None and share >= s.max_off_tick_share:")
+mutant("report: the sample table gives the limit of the share as a fraction under a percent sign",
+       PIPE, "protocol_report.py",
+       "more than the {100.0 * s.max_off_tick_share:g}% that the ",
+       "more than the {s.max_off_tick_share:g}% that the ")
+mutant("report: the table of the checks gives the limit of the share as a fraction",
+       RR, "protocol_report.py",
+       '"{100.0 * limit:g}% above which P2 is labelled exploratory; "',
+       '"{limit:g}% above which P2 is labelled exploratory; "')
+mutant("run_real: no kept trade is a share of zero",
+       RR, "run_real.py",
+       '    if total["trades kept"] == 0:\n        return None',
+       '    if False:\n        return None')
+mutant("run_real: the share of the trades off the tick is the share on the tick",
+       RR, "run_real.py",
+       'return total["off the 0.01 tick"] / total["trades kept"]',
+       'return 1.0 - total["off the 0.01 tick"] / total["trades kept"]')
+mutant("run_real: the share of the trades off the tick does not reach the protocol",
+       RUN, "run_real.py",
+       "results = run_protocol(tape, markets, events, source, settings, share)",
+       "results = run_protocol(tape, markets, events, source, settings)")
+mutant("run_real: the creation time of the tag is not compared with the fetches",
+       RR, "run_real.py",
+       "    problems += _tag_date_problems(runs, repo)\n", "    problems += []\n")
+mutant("run_real: a fetch that started after the tag was created is a departure",
+       RR, "run_real.py", "if first < created:", "if first > created:")
+mutant("run_real: only the last fetch is compared with the creation time of the tag",
+       RR, "run_real.py", "first = min(started)", "first = max(started)")
+mutant("run_real: a start time without an offset is not read as UTC",
+       RR, "run_real.py",
+       "started.append(when if when.tzinfo else when.replace(tzinfo=datetime.UTC))",
+       "started.append(when)")
+mutant("run_real: a start time that cannot be read is an unhandled error",
+       RR, "run_real.py", "except (TypeError, ValueError):", "except TypeError:")
+mutant("run_real: a tag that is not annotated is accepted",
+       RR, "run_real.py", "    if created is None:\n", "    if False:\n")
+mutant("run_real: a missing tag is also reported as not annotated",
+       RR, "run_real.py", "    if not exists:\n        return []\n",
+       "    if False:\n        return []\n")
+mutant("run_real: the creation time of the tag is that of its commit",
+       RR, "run_real.py", "%(taggerdate:iso-strict)", "%(creatordate:iso-strict)")
+
+
 # ---- the rehearsal (experiments/rehearsal.py)
 REH, REH_FILE = "tests/test_rehearsal.py", "experiments/rehearsal.py"
 mutant("rehearsal: the default world has fewer events than the protocol needs",
@@ -1503,7 +1709,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Mutation check for the kalshi_mm test suite.")
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--timeout", type=float, default=600.0, help="seconds per pytest run")
+    ap.add_argument("--only", action="append", default=[], metavar="TEXT",
+                    help="run only the mutants whose name contains TEXT (repeatable); the whole "
+                    "list is the record, so this cannot be combined with --out")
     args = ap.parse_args()
+    if args.only and args.out:
+        ap.error("--only runs part of the list and cannot write the record of the whole list")
+    chosen = [m for m in MUTANTS if not args.only or any(text in m[0] for text in args.only)]
+    if not chosen:
+        ap.error(f"no mutant has a name that contains any of {args.only}")
     lines: list[str] = []
 
     def log(s: str = "") -> None:
@@ -1536,14 +1750,16 @@ def main() -> int:
                     "__pycache__", "*.pyc", ".pytest_cache", "*.egg-info"))
             else:
                 shutil.copy2(src, work / item)
-        rc, _, secs, summary = run_pytest(work, ["tests"], args.timeout)
-        log(f"baseline (no mutant, whole suite): {summary} [{secs:.0f} s]")
+        base = sorted({f for _, targets, _ in chosen for f in targets}) if args.only else ["tests"]
+        rc, _, secs, summary = run_pytest(work, base, args.timeout)
+        what = "the files of the chosen mutants" if args.only else "whole suite"
+        log(f"baseline (no mutant, {what}): {summary} [{secs:.0f} s]")
         if rc != 0:
             log("baseline must pass; aborting")
             return 1
         log("")
         originals: dict[str, str] = {}
-        for name, targets, edits in MUTANTS:
+        for name, targets, edits in chosen:
             touched: dict[str, str] = {}
             try:
                 for rel, old, new in edits:
@@ -1570,7 +1786,7 @@ def main() -> int:
                 for rel in touched:
                     (work / rel).write_text(originals[rel])
     log("")
-    log(f"{len(MUTANTS) - survived} of {len(MUTANTS)} mutants caught.")
+    log(f"{len(chosen) - survived} of {len(chosen)} mutants caught.")
     log(f"{error_only} of them caught only by an error or a timeout, not by a failed test.")
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
