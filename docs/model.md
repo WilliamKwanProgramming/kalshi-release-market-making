@@ -178,8 +178,10 @@ All intervals resample whole events with replacement (the cluster bootstrap; Cam
 Miller, 2008, motivate resampling clusters when observations within a cluster are dependent).
 Percentile intervals, 95%, with the number of replications stated next to each result. Paired
 comparisons resample the per-event differences. Families of tests use the Holm (1979) step-down
-adjustment. A naive trade-level bootstrap is shown alongside in the recovery study to show how
-much narrower it is.
+adjustment. A naive interval is shown alongside in the recovery study: a normal interval from the
+trade-level variances of the near and the quiet window, which treats every trade as independent.
+It is not a competing method; it shows what ignoring the dependence between the trades of an
+event does to coverage.
 
 ## 10. What the synthetic studies can and cannot show
 
