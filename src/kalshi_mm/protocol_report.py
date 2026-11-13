@@ -10,7 +10,8 @@ well when a setting differs from docs/protocol.md. Given the checks of the data
 or "real data" from the source stored with the dataset and the letter follows from it (R for
 synthetic, K for real), so a table cannot be mistaken for the other kind; a synthetic result is
 refused a directory named ``real`` and a real result one named ``rehearsal``. The reading line
-under each table only restates numbers of the table.
+under each table restates numbers of the table and names what is compared; the line after the
+table says what it does not show.
 """
 
 from __future__ import annotations
@@ -177,7 +178,7 @@ def _p2_tables(results: Results, prefix: str, label: str, boot: str) -> list[str
                      _num(v["fills"], 1), _num(v["contracts"], 1), per_contract,
                      _num(v["quotes_live_share"], 2)])
     first = _block(
-        f"{prefix}5", "P2: the four quoting policies", label,
+        f"{prefix}5", "P2: the five quoting policies", label,
         "mean over the evaluated releases of the sum over each release's markets; net P&L is "
         "settled at the outcome and after maker fees.",
         _markdown(["Policy", "Net P&L (USD)", "Gross (USD)", "Fees (USD)", "Fills", "Contracts",
@@ -196,16 +197,22 @@ def _p2_tables(results: Results, prefix: str, label: str, boot: str) -> list[str
     for source in (p2["sensitivity"], p2["halves"]):
         rows += [_diff_row(f"{head}, {k}", v) for k, v in source.items()]
     rows += [_diff_row(f"{head}, series {k}", v) for k, v in p2["by_series"].items()]
+    what = ("flat_matched quotes one flat premium equal to the average of the bucket premiums "
+            "over the quoting window, so the difference is the effect of when a premium is "
+            "applied and not of its average size.")
     reading = (
-        "no release was evaluated, so the primary difference has no value." if primary is None
+        f"no release was evaluated, so the primary difference has no value. {what}"
+        if primary is None
         else f"{head} is {_num(primary['mean'], 3)} USD per release "
              f"{_interval(primary['ci'], 3)} over {primary['n_releases']:,} evaluated releases "
-             f"({boot})."
+             f"({boot}). {what}"
     )
     second = _block(
         f"{prefix}6", "P2: net P&L difference per release (USD)", label, reading,
         _markdown(["Difference", "Mean (USD)", "95% interval", "One-sided p", "Releases"], rows),
-        "which policy earns money: a difference can be positive while both policies lose.",
+        "which policy earns money: a difference can be positive while both policies lose; and "
+        "the pairs with pooled_premium: the pooled premium is a flat premium of another size, so "
+        "the sign of release_aware minus pooled_premium follows the level of the pooled premium.",
     )
     return [first, second]
 
@@ -294,9 +301,12 @@ def tables_markdown(results: Results, extra_deviations: Sequence[str] = (),
     family = _block(
         f"{prefix}8", "The tested family", label,
         "P1, P2 and P3 are one family; a test is supported only if its Holm-adjusted p-value is "
-        f"below {s.alpha:g}.",
+        f"below {s.alpha:g}. P2 is {PRIMARY_PAIR[0]} minus {PRIMARY_PAIR[1]}; "
+        "release_aware minus pooled_premium is one of the other pairs of the P2 table and is "
+        "not tested.",
         _markdown(["Test", "One-sided p", "Holm-adjusted p", "Verdict"], rows),
-        "the size of any effect: see the intervals in the tables above.",
+        "the size of any effect: see the intervals in the tables above; and the sign of the "
+        "pooled comparison: it follows the level of the pooled premium.",
     )
     parts = [_sample_table(results, prefix, label, [*results.deviations, *extra_deviations])]
     parts += _p1_tables(results, prefix, label, boot)
