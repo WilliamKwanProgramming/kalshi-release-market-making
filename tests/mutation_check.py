@@ -39,6 +39,11 @@ def mutant(name: str, tests: str, path: str, old: str, new: str) -> None:
     MUTANTS.append((name, tests.split(), [(S + path, old, new)]))
 
 
+def script_mutant(name: str, tests: str, old: str, new: str) -> None:
+    """Register a mutant that replaces ``old`` by ``new`` in scripts/fetch_kalshi.py."""
+    MUTANTS.append((name, tests.split(), [("scripts/fetch_kalshi.py", old, new)]))
+
+
 # ---- mid proxy of the tape (tape.py)
 mutant("tape: inclusive and exclusive query swapped", "tests/test_tape.py", "tape.py",
        'side="right" if inclusive else "left"', 'side="left" if inclusive else "right"')
@@ -239,6 +244,147 @@ mutant("run_real: the tag is not checked", PIPE, "run_real.py",
        "if not args.no_tag_check:", "if False:")
 mutant("run_real: files that are not tracked are ignored by the tag check", RUN, "run_real.py",
        "files = sorted(set(changed) | set(untracked))", "files = sorted(set(changed))")
+
+
+# ---- the markout panel computed in SQL (panel.py)
+PANEL = "tests/test_panel.py"
+mutant("panel: effective half-spread without the side sign", PANEL, "panel.py",
+       "side * (price - mid_before) AS eff_half_spread", "(price - mid_before) AS eff_half_spread")
+mutant("panel: adverse selection has the wrong sign", PANEL, "panel.py",
+       "side * (mid_after - mid_before) AS adverse_selection",
+       "side * (mid_before - mid_after) AS adverse_selection")
+mutant("panel: realized spread uses mid_before", PANEL, "panel.py",
+       "side * (price - mid_after) AS realized_spread",
+       "side * (price - mid_before) AS realized_spread")
+mutant("panel: settlement markout has the wrong sign", PANEL, "panel.py",
+       "side * (price - outcome) AS settlement_markout",
+       "side * (outcome - price) AS settlement_markout")
+mutant("panel: mid_before sees a buy print at the trade's own time", PANEL, "panel.py",
+       "s.side = 1 AND s.ts < x.ts", "s.side = 1 AND s.ts <= x.ts")
+mutant("panel: mid_before sees a sell print at the trade's own time", PANEL, "panel.py",
+       "s.side = -1 AND s.ts < x.ts", "s.side = -1 AND s.ts <= x.ts")
+mutant("panel: a buy print exactly at after_ts is not used", PANEL, "panel.py",
+       "s.side = 1\n               AND s.ts <= x.after_ts",
+       "s.side = 1\n               AND s.ts < x.after_ts")
+mutant("panel: a sell print exactly at after_ts is not used", PANEL, "panel.py",
+       "s.side = -1\n               AND s.ts <= x.after_ts",
+       "s.side = -1\n               AND s.ts < x.after_ts")
+mutant("panel: mid_after may use a buy print at the release", PANEL, "panel.py",
+       "AND s.ts <= x.after_ts AND s.ts < x.release_ts\n"
+       "             ORDER BY s.ts DESC, s.seq DESC LIMIT 1) AS buy_after",
+       "AND s.ts <= x.after_ts AND s.ts <= x.release_ts\n"
+       "             ORDER BY s.ts DESC, s.seq DESC LIMIT 1) AS buy_after")
+mutant("panel: mid_after may use a sell print at the release", PANEL, "panel.py",
+       "AND s.ts <= x.after_ts AND s.ts < x.release_ts\n"
+       "             ORDER BY s.ts DESC, s.seq DESC LIMIT 1) AS sell_after",
+       "AND s.ts <= x.after_ts AND s.ts <= x.release_ts\n"
+       "             ORDER BY s.ts DESC, s.seq DESC LIMIT 1) AS sell_after")
+mutant("panel: a buy print exactly stale_s old is stale at the trade", PANEL, "panel.py",
+       "CASE WHEN x.ts - s.ts <= :stale_s THEN s.price END\n"
+       "              FROM trades AS s\n"
+       "             WHERE s.market = x.market AND s.side = 1 AND",
+       "CASE WHEN x.ts - s.ts < :stale_s THEN s.price END\n"
+       "              FROM trades AS s\n"
+       "             WHERE s.market = x.market AND s.side = 1 AND")
+mutant("panel: a sell print exactly stale_s old is stale at after_ts", PANEL, "panel.py",
+       "CASE WHEN x.after_ts - s.ts <= :stale_s THEN s.price END\n"
+       "              FROM trades AS s\n"
+       "             WHERE s.market = x.market AND s.side = -1\n",
+       "CASE WHEN x.after_ts - s.ts < :stale_s THEN s.price END\n"
+       "              FROM trades AS s\n"
+       "             WHERE s.market = x.market AND s.side = -1\n")
+mutant("panel: the horizon is not cut at the release", PANEL, "panel.py",
+       "MIN(ts + :horizon_s, release_ts)", "(ts + :horizon_s)")
+mutant("panel: a trade at the release is kept", PANEL, "panel.py",
+       "WHERE ts < release_ts", "WHERE ts <= release_ts")
+mutant("panel: minutes to the release computed as hours", PANEL, "panel.py",
+       "(release_ts - ts) / 60.0 AS tau_min", "(release_ts - ts) / 3600.0 AS tau_min")
+mutant("panel: the 30 minute bucket edge is open", PANEL, "panel.py",
+       "WHEN tau_min <= 30 THEN 2", "WHEN tau_min < 30 THEN 2")
+mutant("panel: the earlier of two prints at one time wins", PANEL, "panel.py",
+       "ORDER BY s.ts DESC, s.seq DESC LIMIT 1) AS buy_before",
+       "ORDER BY s.ts DESC, s.seq ASC LIMIT 1) AS buy_before")
+mutant("panel: the mid is the last buy print alone", PANEL, "panel.py",
+       "0.5 * (buy_before + sell_before)", "buy_before")
+mutant("panel: the index is not the row of the whole tape", PANEL, "panel.py",
+       "ROW_NUMBER() OVER (ORDER BY t.market, t.ts, t.seq) - 1",
+       "ROW_NUMBER() OVER (ORDER BY t.market, t.ts, t.seq)")
+
+# ---- records from the API, the protocol filters and the fetch loop (ingest.py)
+ING = "tests/test_ingest.py"
+mutant("ingest: the taker side is inverted", ING, "ingest.py",
+       '    if taker == "yes":\n        side = 1\n    elif taker == "no":\n        side = -1\n',
+       '    if taker == "yes":\n        side = -1\n    elif taker == "no":\n        side = 1\n')
+mutant("ingest: block trades are kept", ING, "ingest.py",
+       '        if trade["is_block_trade"]:', "        if False:")
+mutant("ingest: a trade at the release is kept", ING, "ingest.py",
+       'elif trade["ts"] >= release_ts:', 'elif trade["ts"] > release_ts:')
+mutant("ingest: a market with exactly the minimum number of trades is dropped", ING, "ingest.py",
+       "if len(trades) < min_trades:", "if len(trades) <= min_trades:")
+mutant("ingest: a repeated trade_id is kept", ING, "ingest.py",
+       '            if trade["trade_id"] in seen:', "            if False:")
+mutant("ingest: a price of exactly 1 is accepted", ING, "ingest.py",
+       "if not 0.0 < price < 1.0:", "if not 0.0 < price <= 1.0:")
+mutant("ingest: yes and no results are swapped", ING, "ingest.py",
+       '"outcome": {"yes": 1, "no": 0}.get(result),', '"outcome": {"yes": 0, "no": 1}.get(result),')
+mutant("ingest: a release at the start of the window is outside it", ING, "ingest.py",
+       "if not window_start <= release < window_end:",
+       "if not window_start < release < window_end:")
+mutant("ingest: a release at the end of the window is inside it", ING, "ingest.py",
+       "if not window_start <= release < window_end:",
+       "if not window_start <= release <= window_end:")
+mutant("ingest: a release exactly at the cutoff is read from both endpoints", ING, "ingest.py",
+       "if release_ts <= cutoff_ts:", "if release_ts < cutoff_ts:")
+mutant("ingest: the release bound of a query is rounded down", ING, "ingest.py",
+       "last = math.ceil(release_ts)", "last = math.floor(release_ts)")
+mutant("ingest: the historical range ends at the rounded-down cutoff", ING, "ingest.py",
+       'TradeQuery("historical", None, math.ceil(cutoff_ts)),',
+       'TradeQuery("historical", None, math.floor(cutoff_ts)),')
+mutant("ingest: the live range starts at the cutoff, not a second before", ING, "ingest.py",
+       'TradeQuery("live", math.floor(cutoff_ts) - 1, last),',
+       'TradeQuery("live", math.floor(cutoff_ts), last),')
+mutant("ingest: the archived record wins whenever it is settled", ING, "ingest.py",
+       "elif ticker not in chosen or (_is_settled(record) and not _is_settled(chosen[ticker])):",
+       "elif ticker not in chosen or _is_settled(record):")
+mutant("ingest: a stored market is fetched again", ING, "ingest.py",
+       "if isinstance(ticker, str) and ticker in loaded:", "if False:")
+mutant("ingest: a calendar that moved a stored event is accepted", ING, "ingest.py",
+       "release_of[e] != ts)", "release_of[e] == ts)")
+mutant("ingest: the cutoff is not read again at the end of a run", ING, "ingest.py",
+       "cutoff_after=client.historical_cutoff(),", "cutoff_after=cutoff,")
+mutant("ingest: a market with too few trades is written", ING, "ingest.py",
+       "        if len(markets):", "        if True:")
+
+# ---- the HTTP client (kalshi_api.py)
+API = "tests/test_kalshi_api.py"
+mutant("api: an empty cursor does not end the paging", API, "kalshi_api.py",
+       "if not cursor:", "if cursor is None:")
+mutant("api: a repeated cursor is followed", API, "kalshi_api.py",
+       "if cursor in seen:", "if False:")
+mutant("api: HTTP 429 is not retried", API, "kalshi_api.py",
+       "if status != 429 and status < 500:", "if status < 500:")
+mutant("api: Retry-After is ignored", API, "kalshi_api.py",
+       "return backoff if retry_after is None else max(backoff, retry_after)", "return backoff")
+mutant("api: one retry too few", API, "kalshi_api.py",
+       "for attempt in range(self.max_retries + 1):", "for attempt in range(self.max_retries):")
+mutant("api: the backoff ceiling is a floor", API, "kalshi_api.py",
+       "ceiling = min(self.max_delay_s, self.base_delay_s * 2.0**attempt)",
+       "ceiling = max(self.max_delay_s, self.base_delay_s * 2.0**attempt)")
+
+# ---- the command line (scripts/fetch_kalshi.py), which the copy of the repository includes
+script_mutant("fetch_kalshi: an API failure exits with status 0", ING,
+              'again to resume.")\n        return 1\n', 'again to resume.")\n        return 0\n')
+script_mutant("fetch_kalshi: a calendar error exits with status 1", ING,
+              'out(f"calendar: {error}")\n            return 2',
+              'out(f"calendar: {error}")\n            return 1')
+script_mutant("fetch_kalshi: the agreement notice is not printed", ING,
+              "    out(NOTICE)\n", "    pass\n")
+script_mutant("fetch_kalshi: a dry run fetches", ING,
+              "        if args.dry_run:\n            return _dry_run(",
+              "        if False:\n            return _dry_run(")
+script_mutant("fetch_kalshi: a draft calendar may have any name", ING,
+              'and "draft" not in args.calendar_draft.name.lower():',
+              "and False:")
 
 
 def run_pytest(work: Path, targets: list[str], timeout: float):
