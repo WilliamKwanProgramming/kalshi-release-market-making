@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from kalshi_mm.backtest import walk_forward
+from kalshi_mm.backtest import mean_fill_premium, walk_forward
 from kalshi_mm.calibration import skill_interval, walk_forward_recalibration
 from kalshi_mm.markout import (
     bucket_means,
@@ -77,6 +77,7 @@ class Settings:
     recal_min_releases: int = 50
     recal_refit_every: int = 10
     min_releases: int = 100
+    max_off_tick_share: float = 0.05
 
 
 DEFAULT = Settings()
@@ -346,32 +347,38 @@ def _primary_difference(frame: pd.DataFrame, settings: Settings) -> dict[str, An
 
 
 def p2_pricing(ds: Dataset, settings: Settings = DEFAULT) -> dict[str, Any]:
-    """P2 of docs/protocol.md: does a premium by minutes to release beat a flat premium of the
-    same average size?
+    """P2 of docs/protocol.md: does a premium by minutes to release beat a flat premium with the
+    same average over the clock of the quoting window?
 
     The walk-forward backtest (docs/model.md sections 6 and 7) runs the five policies. The tested
     quantity is the net settled P&L per release (sum over its markets) of ``release_aware`` minus
     ``flat_matched``, paired by release, over the releases after the burn-in. ``flat_matched``
-    quotes the average of the bucket premiums over the quoting window (per unit of 4 m (1 - m)),
-    so the two policies differ in when a premium is applied and not in how large it is on
-    average. Reported, not tested: every
-    other pair of policies (among them ``release_aware`` minus ``pooled_premium``, the comparison
-    of the first version of the protocol, whose sign follows the level of the pooled premium), each
-    policy's totals, the primary difference by series and in the two halves of the sample split at
-    the median release time, and the primary difference with the touch fill rule and with maker fee
-    coefficient 0.
+    quotes the average of the bucket premiums over the clock of the quoting window (per unit of
+    4 m (1 - m)). That is the same premium averaged over the clock and not the same premium where
+    the quotes are hit: ``totals`` has the premium at the fills of every policy
+    (``fill_premium``, :func:`kalshi_mm.backtest.mean_fill_premium` over the evaluated markets).
+    Reported, not tested: every other pair of policies (among them ``release_aware`` minus
+    ``pooled_premium``, the comparison of the first version of the protocol, whose sign follows
+    the level of the pooled premium), each policy's totals, the primary difference by series and
+    in the two halves of the sample split at the median release time, and the primary difference
+    with the touch fill rule, with maker fee coefficient 0 and with the flat premium scaled by the
+    ratio of the premiums at the fills of ``release_aware`` and ``flat_matched`` (so that the two
+    quote the same premium at their fills; the scale is in the name of the entry of
+    ``sensitivity``, which is None when either policy has no premium at its fills).
     """
     frame = walk_forward(ds.tape, ds.markets, ds.events, POLICIES, settings.quote)
     frame = frame.assign(original_series=frame["market"].map(ds.market_series))
     pnl = _per_release(frame, "pnl")
     pairs = {f"{a} - {b}": paired_mean((pnl[a] - pnl[b]).to_numpy(), settings) for a, b in PAIRS}
+    evaluated = frame[frame["evaluated"]]
     totals = {
         policy: {
             column: float(_per_release(frame, column)[policy].mean())
             for column in ("pnl", "gross", "fees", "fills", "contracts", "marked_pnl")
         }
-        | {"quotes_live_share": float(frame.loc[frame["evaluated"] & (frame["policy"] == policy),
-                                                 "quotes_live_share"].mean())}
+        | {"quotes_live_share": float(evaluated.loc[evaluated["policy"] == policy,
+                                                     "quotes_live_share"].mean())}
+        | {"fill_premium": mean_fill_premium(evaluated[evaluated["policy"] == policy])}
         for policy in POLICIES
     }
     by_series = {
@@ -393,6 +400,16 @@ def p2_pricing(ds: Dataset, settings: Settings = DEFAULT) -> dict[str, Any]:
     ):
         variant = walk_forward(ds.tape, ds.markets, ds.events, PRIMARY_PAIR, params)
         sensitivity[name] = _primary_difference(variant, settings)
+    first, second = PRIMARY_PAIR
+    name = f"flat premium scaled to the premium at the fills of {first}"
+    fill_first, fill_second = totals[first]["fill_premium"], totals[second]["fill_premium"]
+    if fill_first > 0.0 and fill_second > 0.0:  # a NaN fails both
+        scale = settings.quote.flat_scale * fill_first / fill_second
+        params = dataclasses.replace(settings.quote, flat_scale=scale)
+        variant = walk_forward(ds.tape, ds.markets, ds.events, PRIMARY_PAIR, params)
+        sensitivity[f"{name} (F = {scale:.2f})"] = _primary_difference(variant, settings)
+    else:
+        sensitivity[f"{name} (undefined)"] = None
     return {
         "frame": frame,
         "primary": _primary_difference(frame, settings),
@@ -477,13 +494,17 @@ def p3_recalibration(ds: Dataset, settings: Settings = DEFAULT) -> dict[str, Any
 
 
 def family(p1: dict[str, Any], p2: dict[str, Any], p3: dict[str, Any], n_releases: int,
-           settings: Settings = DEFAULT) -> dict[str, Any]:
+           settings: Settings = DEFAULT, off_tick_share: float | None = None) -> dict[str, Any]:
     """The three tests as one family: raw p-values, Holm-adjusted p-values and the verdicts.
 
     A test that cannot be computed counts as p = 1 in the family. ``supported`` needs a
     Holm-adjusted p-value below ``settings.alpha``. P1 and P2 are labelled exploratory instead when
     fewer than ``settings.min_releases`` releases enter the test (docs/protocol.md): P1 uses the
-    ``n_releases`` releases kept, P2 the ``p2["n_releases"]`` releases after the burn-in.
+    ``n_releases`` releases kept, P2 the ``p2["n_releases"]`` releases after the burn-in. P2 is
+    labelled exploratory too when ``off_tick_share``, the share of the kept trades whose price is
+    off the 0.01 USD tick (``run_real.data_checks``), is above ``settings.max_off_tick_share``:
+    the backtest quotes and fills on that tick. ``None`` means that the share is not known, as in
+    a run on synthetic rows, and gives no label.
     """
     raw = {
         "P1": p1["primary"]["p_one_sided"],
@@ -492,10 +513,13 @@ def family(p1: dict[str, Any], p2: dict[str, Any], p3: dict[str, Any], n_release
     }
     adjusted = holm_adjust([1.0 if v is None else v for v in raw.values()])
     used = {"P1": n_releases, "P2": p2["n_releases"]}  # P3 is never labelled exploratory
+    coarse = off_tick_share is not None and off_tick_share > settings.max_off_tick_share
     out = {}
     for (name, p), adj in zip(raw.items(), adjusted, strict=True):
+        exploratory = (name in used and used[name] < settings.min_releases) or (
+            name == "P2" and coarse)
         label = "not computed" if p is None else (
-            "exploratory" if name in used and used[name] < settings.min_releases
+            "exploratory" if exploratory
             else ("supported" if adj < settings.alpha else "not supported")
         )
         out[name] = {"p_one_sided": p, "p_holm": float(adj), "verdict": label}
@@ -514,6 +538,7 @@ class Results:
     p3: dict[str, Any]
     family: dict[str, Any]
     deviations: list[str]
+    off_tick_share: float | None = None
 
 
 def run_protocol(
@@ -522,11 +547,13 @@ def run_protocol(
     events: pd.DataFrame,
     source: str,
     settings: Settings = DEFAULT,
+    off_tick_share: float | None = None,
 ) -> Results:
     """Prepare the dataset and compute P1, P2, P3 and the Holm-adjusted family (docs/protocol.md).
 
     ``source`` is the label stored with the dataset (``"synthetic"`` or ``"kalshi-public-api"``);
-    an unknown source raises. No column starting with ``latent_`` is read.
+    an unknown source raises. No column starting with ``latent_`` is read. ``off_tick_share`` is
+    the share of the kept trades off the 0.01 USD tick, if it is known (see :func:`family`).
     """
     data_label(source)
     ds = prepare(tape, markets, events, settings)
@@ -537,5 +564,6 @@ def run_protocol(
     p3 = p3_recalibration(ds, settings)
     return Results(
         source, settings, ds, p1, p2, p3,
-        family(p1, p2, p3, ds.counts["releases kept"], settings), deviations(settings),
+        family(p1, p2, p3, ds.counts["releases kept"], settings, off_tick_share),
+        deviations(settings), off_tick_share,
     )

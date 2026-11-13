@@ -13,9 +13,11 @@ that decide a result (``src``, ``scripts``, ``docs/protocol.md``, ``docs/model.m
 ``pyproject.toml``) are those of the commit tagged ``real-run``; ``--no-tag-check`` runs anyway and
 writes the departure to ``DEVIATIONS.md``, as every ``--set`` that changes a setting does. The
 record of the fetches (``panel.fetch_runs``) is printed and written; a database without one, a
-fetch run from a repository with uncommitted changes and a fetch whose commit differs from the tag
-in the guarded files are departures too (:func:`provenance_problems`).
-Results go to ``results/real`` with the table letter K.
+fetch run from a repository with uncommitted changes, a fetch whose commit differs from the tag
+in the guarded files, a tag that is not annotated (it has no creation time) and a fetch that
+started before the tag was created are departures too (:func:`provenance_problems`). P2 is
+labelled exploratory when more than ``Settings.max_off_tick_share`` of the kept trades are off the
+0.01 USD tick (:func:`off_tick_share`). Results go to ``results/real`` with the table letter K.
 """
 
 from __future__ import annotations
@@ -52,7 +54,9 @@ __all__ = [
     "describe_dataset",
     "main",
     "off_tick",
+    "off_tick_share",
     "provenance_problems",
+    "tag_created",
     "tag_problem",
 ]
 
@@ -150,6 +154,15 @@ def data_checks(markets: pd.DataFrame, events: pd.DataFrame, api_trades: pd.Data
     }
 
 
+def off_tick_share(checks: dict[str, Any]) -> float | None:
+    """The share of the kept trades that are off the tick, from :func:`data_checks`, or None when
+    there is no kept trade."""
+    total = checks["by_series"]["all"]
+    if total["trades kept"] == 0:
+        return None
+    return total["off the 0.01 tick"] / total["trades kept"]
+
+
 def describe_checks(checks: dict[str, Any]) -> str:
     """The checks of :func:`data_checks` as text."""
     rows = checks["by_series"]
@@ -182,13 +195,28 @@ def tag_problem(repo: Path = REPO) -> str | None:
     return None
 
 
+def tag_created(repo: Path = REPO) -> datetime.datetime | None:
+    """When the tag ``real-run`` was created, or None.
+
+    The time is the tagger date of an annotated tag (``git tag -a``). A lightweight tag has none,
+    and a tag that does not exist has none either.
+    """
+    shown = subprocess.run(
+        ["git", "-C", str(repo), "for-each-ref", "--format=%(taggerdate:iso-strict)",
+         f"refs/tags/{TAG}"], capture_output=True, text=True,
+    ).stdout.strip()
+    return datetime.datetime.fromisoformat(shown) if shown else None
+
+
 def provenance_problems(runs: Sequence[dict[str, Any]], repo: Path = REPO) -> list[str]:
     """Departures from docs/protocol.md that the record of the fetches shows, as sentences.
 
     ``runs`` is ``panel.fetch_runs`` of the database. A departure is: no record at all; a fetch
     with ``git_dirty`` true; a fetch whose ``git_commit`` is unknown, not in ``repo`` or differs
     from the tag ``real-run`` in the guarded files (``git diff --quiet <commit> real-run --
-    <guarded>``; the comparison is made once per commit).
+    <guarded>``; the comparison is made once per commit); a tag that exists but is not annotated,
+    so that its creation time is unknown (:func:`tag_created`); a fetch that started before the
+    tag was created.
     """
     if not runs:
         return ["the database has no record of its fetch (fetch_started_utc, git_commit): it was "
@@ -212,7 +240,35 @@ def provenance_problems(runs: Sequence[dict[str, Any]], repo: Path = REPO) -> li
             why = (diff.stderr.strip().splitlines() or ["git failed"])[0]
             problems.append(f"the commit {commit} of a fetch cannot be compared with the tag "
                             f"{TAG}: {why}")
+    problems += _tag_date_problems(runs, repo)
     return problems
+
+
+def _tag_date_problems(runs: Sequence[dict[str, Any]], repo: Path) -> list[str]:
+    """The departures about the creation time of the tag ``real-run`` (see
+    :func:`provenance_problems`); none when the tag does not exist (``tag_problem`` says so)."""
+    exists = subprocess.run(["git", "-C", str(repo), "rev-parse", "-q", "--verify",
+                             f"refs/tags/{TAG}"], capture_output=True, text=True).returncode == 0
+    if not exists:
+        return []
+    created = tag_created(repo)
+    if created is None:
+        return [f"the tag {TAG} is not annotated (git tag -a), so it has no creation time and it "
+                "cannot be shown that it was made before the fetch"]
+    started = []
+    for r in runs:
+        try:
+            when = datetime.datetime.fromisoformat(r["fetch_started_utc"])
+        except (TypeError, ValueError):
+            return [f"a fetch has no readable start time ({r['fetch_started_utc']!r}), so it "
+                    f"cannot be compared with the creation time of the tag {TAG}"]
+        # a time without an offset is read as UTC, the zone in which the fetch records its start
+        started.append(when if when.tzinfo else when.replace(tzinfo=datetime.UTC))
+    first = min(started)
+    if first < created:
+        return [f"a fetch started {first.isoformat()}, before the tag {TAG} was created "
+                f"({created.isoformat()})"]
+    return []
 
 
 def _sha256(path: Path) -> str:
@@ -224,6 +280,7 @@ def _sha256(path: Path) -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Run the protocol on a database of real data; the exit status is 0, or 2 if it refuses."""
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--db", type=Path, default=REPO / "data" / "kalshi.sqlite")
     ap.add_argument("--out", type=Path, default=REPO / "results" / "real")
@@ -270,11 +327,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if problem:
         if not args.no_tag_check:
             print(f"\nrun_real: {problem}. Tag the commit that holds the code and the protocol "
-                  f"(git tag {TAG}) before the data are fetched, or pass --no-tag-check.")
+                  f"with an annotated tag (git tag -a {TAG} -m 'before the fetch') before the "
+                  "data are fetched, or pass --no-tag-check.")
             return 2
         extra.append(f"run without a clean tag: {problem}")
     settings = with_overrides(DEFAULT, args.assign)
-    results = run_protocol(tape, markets, events, source, settings)
+    share = off_tick_share(checks)
+    results = run_protocol(tape, markets, events, source, settings, share)
     names = write_results(results, args.out, extra_deviations=extra, data_checks=checks)
     manifest.extra += [
         f"database: {args.db.name}, sha256 {_sha256(args.db)}",

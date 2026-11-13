@@ -93,6 +93,11 @@ def _sample_table(results: Results, prefix: str, label: str, deviations: Sequenc
     if n_p2 < s.min_releases:
         note += (f" P2 is exploratory because fewer than {s.min_releases} releases enter it "
                  f"({n_p2:,} after the burn-in).")
+    share = results.off_tick_share
+    if share is not None and share > s.max_off_tick_share:
+        note += (f" P2 is exploratory because {100.0 * share:.1f}% of the kept trades are off the "
+                 f"0.01 USD tick, more than the {100.0 * s.max_off_tick_share:g}% that the "
+                 f"protocol allows.")
     if deviations:
         note += " Departures from docs/protocol.md: " + "; ".join(deviations) + "."
     rows = [[k.capitalize(), f"{v:,}"] for k, v in counts.items()]
@@ -176,13 +181,16 @@ def _p2_tables(results: Results, prefix: str, label: str, boot: str) -> list[str
         per_contract = "n/a" if not v["contracts"] else _num(v["pnl"] / v["contracts"], 2, 100)
         rows.append([policy, _num(v["pnl"], 3), _num(v["gross"], 3), _num(v["fees"], 3),
                      _num(v["fills"], 1), _num(v["contracts"], 1), per_contract,
-                     _num(v["quotes_live_share"], 2)])
+                     _num(v["quotes_live_share"], 2), _num(v["fill_premium"], 2, 100)])
     first = _block(
         f"{prefix}5", "P2: the five quoting policies", label,
         "mean over the evaluated releases of the sum over each release's markets; net P&L is "
-        "settled at the outcome and after maker fees.",
+        "settled at the outcome and after maker fees; the premium at the fills is the mean over "
+        "all the contracts filled in the evaluated releases of the premium per unit of 4m(1 - m) "
+        "of the quote that was hit, in cents.",
         _markdown(["Policy", "Net P&L (USD)", "Gross (USD)", "Fees (USD)", "Fills", "Contracts",
-                   "Net cents per contract filled", "Share of intervals quoted"], rows),
+                   "Net cents per contract filled", "Share of intervals quoted",
+                   "Premium at the fills, cents per unit of 4m(1 - m)"], rows),
         "queue position, market impact and the rest of the book: a fill is a strict trade-through "
         "of a tape that does not react to the quotes.",
     )
@@ -198,8 +206,10 @@ def _p2_tables(results: Results, prefix: str, label: str, boot: str) -> list[str
         rows += [_diff_row(f"{head}, {k}", v) for k, v in source.items()]
     rows += [_diff_row(f"{head}, series {k}", v) for k, v in p2["by_series"].items()]
     what = ("flat_matched quotes one flat premium equal to the average of the bucket premiums "
-            "over the quoting window, so the difference is the effect of when a premium is "
-            "applied and not of its average size.")
+            "over the clock of the quoting window. That is the same premium averaged over the "
+            "clock and not the same premium at the fills, where the quotes are hit: the table "
+            "above has the premium at the fills of each policy, and one row below scales the flat "
+            "premium to the premium at the fills of release_aware.")
     reading = (
         f"no release was evaluated, so the primary difference has no value. {what}"
         if primary is None
@@ -210,9 +220,12 @@ def _p2_tables(results: Results, prefix: str, label: str, boot: str) -> list[str
     second = _block(
         f"{prefix}6", "P2: net P&L difference per release (USD)", label, reading,
         _markdown(["Difference", "Mean (USD)", "95% interval", "One-sided p", "Releases"], rows),
-        "which policy earns money: a difference can be positive while both policies lose; and "
-        "the pairs with pooled_premium: the pooled premium is a flat premium of another size, so "
-        "the sign of release_aware minus pooled_premium follows the level of the pooled premium.",
+        "which policy earns money: a difference can be positive while both policies lose; "
+        "whether the primary difference comes from when the premium is applied or from the "
+        "premium at the fills: read it next to the row with the flat premium scaled to the "
+        "premium at the fills; and the pairs with pooled_premium: the pooled premium is a flat "
+        "premium of another size, so the sign of release_aware minus pooled_premium follows the "
+        "level of the pooled premium.",
     )
     return [first, second]
 
@@ -265,16 +278,19 @@ def _p3_table(results: Results, prefix: str, label: str, boot: str) -> str:
     )
 
 
-def _checks_table(checks: Mapping[str, Any], prefix: str, label: str) -> str:
+def _checks_table(checks: Mapping[str, Any], prefix: str, label: str, limit: float) -> str:
     rows = checks["by_series"]
     header = ["Series", *next(iter(rows.values())).keys()]
     body = [[name, *[f"{v:,}" for v in counts.values()]] for name, counts in rows.items()]
     total = rows["all"]
+    share = (f"{100.0 * total['off the 0.01 tick'] / total['trades kept']:.1f}%"
+             if total["trades kept"] else "n/a")
     return _block(
         f"{prefix}9", "Checks of the data", label,
         f"the backtest quotes on a {checks['tick_usd']:g} USD tick, and "
         f"{total['off the 0.01 tick']:,} of the {total['trades kept']:,} kept trades are at "
-        f"prices off it (tolerance {checks['tolerance_usd']:g} USD); "
+        f"prices off it (tolerance {checks['tolerance_usd']:g} USD), {share} against the "
+        f"{100.0 * limit:g}% above which P2 is labelled exploratory; "
         f"{total['trade_id from both endpoints']:,} kept trades have a trade_id that both trade "
         f"endpoints returned, and {total['groups alike across endpoints']:,} groups of kept trades "
         "differ only in trade_id and came from the two endpoints.",
@@ -305,15 +321,18 @@ def tables_markdown(results: Results, extra_deviations: Sequence[str] = (),
         "release_aware minus pooled_premium is one of the other pairs of the P2 table and is "
         "not tested.",
         _markdown(["Test", "One-sided p", "Holm-adjusted p", "Verdict"], rows),
-        "the size of any effect: see the intervals in the tables above; and the sign of the "
-        "pooled comparison: it follows the level of the pooled premium.",
+        "the size of any effect: see the intervals in the tables above; that a supported P2 shows "
+        "informed trading or that a premium by minutes to the release pays: on the synthetic "
+        "worlds the primary difference is positive with no informed share (table B1 of the "
+        "README) and not positive at an equal premium at the fills (table B10); and the sign of "
+        "the pooled comparison: it follows the level of the pooled premium.",
     )
     parts = [_sample_table(results, prefix, label, [*results.deviations, *extra_deviations])]
     parts += _p1_tables(results, prefix, label, boot)
     parts += _p2_tables(results, prefix, label, boot)
     parts += [_p3_table(results, prefix, label, boot), family]
     if data_checks is not None:
-        parts.append(_checks_table(data_checks, prefix, label))
+        parts.append(_checks_table(data_checks, prefix, label, s.max_off_tick_share))
     return "\n".join(parts)
 
 

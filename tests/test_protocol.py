@@ -237,6 +237,7 @@ def test_the_default_settings_are_those_of_the_protocol():
     assert (DEFAULT.n_boot, DEFAULT.seed, DEFAULT.level) == (10_000, 20261113, 0.95)
     assert (DEFAULT.near, DEFAULT.quiet) == ((0.0, 30.0), (360.0, np.inf))
     assert (DEFAULT.min_trades, DEFAULT.min_releases) == (50, 100)
+    assert DEFAULT.max_off_tick_share == 0.05
     q = DEFAULT.quote
     assert (q.gamma, q.k, q.size, q.max_position) == (0.002, 100.0, 10.0, 100.0)
     assert (q.refresh_s, q.latency_s) == (60.0, 1.0)
@@ -373,6 +374,26 @@ def test_family_counts_the_releases_that_each_test_uses():
     out = family(*_tests(0.001, 0.001, 0.001, n_p2=n), n - 20, DEFAULT)
     assert [out[k]["verdict"] for k in ("P1", "P2", "P3")] == [
         "exploratory", "supported", "supported"]
+
+
+def test_family_labels_p2_exploratory_when_more_than_the_allowed_share_of_trades_is_off_the_tick():
+    def verdicts(share):
+        out = family(*_tests(0.001, 0.001, 0.001), 150, DEFAULT, share)
+        return [out[k]["verdict"] for k in ("P1", "P2", "P3")]
+
+    assert verdicts(None) == ["supported"] * 3  # the share is not known: no label
+    assert verdicts(0.0) == ["supported"] * 3
+    assert verdicts(0.05) == ["supported"] * 3  # at the limit: allowed
+    assert verdicts(0.0500001) == ["supported", "exploratory", "supported"]  # P2 only
+    assert verdicts(1.0) == ["supported", "exploratory", "supported"]
+    looser = dataclasses.replace(DEFAULT, max_off_tick_share=0.5)
+    assert family(*_tests(0.001, 0.001, 0.001), 150, looser, 0.4)["P2"]["verdict"] == "supported"
+    assert family(*_tests(0.001, 0.001, 0.001), 150, looser, 0.6)["P2"]["verdict"] == "exploratory"
+    # a test that is not computed stays "not computed", and the label does not hide a p-value
+    out = family(*_tests(0.001, None, 0.001), 150, DEFAULT, 0.9)
+    assert out["P2"]["verdict"] == "not computed"
+    out = family(*_tests(0.001, 0.9, 0.001), 150, DEFAULT, 0.9)
+    assert out["P2"]["verdict"] == "exploratory" and out["P2"]["p_one_sided"] == 0.9
 
 
 def test_family_counts_a_test_that_is_not_computed_as_p_equal_to_one():

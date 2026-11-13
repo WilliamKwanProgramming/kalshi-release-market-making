@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import datetime
 import json
+import os
 import sqlite3
 import subprocess
 from contextlib import closing
@@ -13,7 +15,15 @@ import pandas as pd
 
 from kalshi_mm import run_real
 from kalshi_mm.panel import begin_fetch_run, create_schema, end_fetch_run, write_dataset
-from kalshi_mm.run_real import data_checks, describe_checks, describe_dataset, off_tick, tag_problem
+from kalshi_mm.run_real import (
+    data_checks,
+    describe_checks,
+    describe_dataset,
+    off_tick,
+    off_tick_share,
+    tag_created,
+    tag_problem,
+)
 from kalshi_mm.world import WorldParams, generate_world
 
 HOUR = 3600.0
@@ -70,12 +80,19 @@ def test_describe_dataset_with_one_event_names_it_once():
     assert text.count("B1 (JOBS)") == 1
 
 
-def _git(repo: Path, *args: str) -> None:
+def _git(repo: Path, *args: str, when: str | None = None) -> None:
+    """Run git in ``repo``; ``when`` (ISO 8601) is the committer and tagger date."""
+    env = {**os.environ, "GIT_COMMITTER_DATE": when} if when else None
     subprocess.run(
         ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com",
          "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", *args],
-        check=True, capture_output=True,
+        check=True, capture_output=True, env=env,
     )
+
+
+def _annotate(repo: Path, when: str) -> None:
+    """The tag ``real-run`` on HEAD, annotated and created at ``when``."""
+    _git(repo, "tag", "-a", "real-run", "-m", "the code and the protocol of the run", when=when)
 
 
 def test_tag_problem_in_a_temporary_repository(tmp_path):
@@ -195,6 +212,35 @@ def test_run_real_prints_and_writes_the_checks_of_the_data(tmp_path, capsys, mon
     assert "check, off the 0.01 tick: 2" in manifest
 
 
+def test_run_real_labels_p2_exploratory_when_too_many_trades_are_off_the_tick(
+        tmp_path, capsys, monkeypatch):
+    _real_like_database(tmp_path / "kalshi.sqlite")
+    monkeypatch.setattr(run_real, "tag_problem", lambda: None)
+    out = tmp_path / "real"
+    monkeypatch.setattr(run_real, "off_tick_share", lambda checks: 0.0501)  # above the 5% limit
+    assert run_real.main(["--db", str(tmp_path / "kalshi.sqlite"), "--out", str(out),
+                          *[f"--set={a}" for a in SMALL]]) == 0
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["family"]["P2"]["verdict"] == "exploratory"
+    tables = (out / "tables.md").read_text()
+    assert ("P2 is exploratory because 5.0% of the kept trades are off the 0.01 USD tick, more "
+            "than the 5% that the protocol allows.") in tables
+    assert "off the 0.01 USD tick" not in (out / "DEVIATIONS.md").read_text()  # not a departure
+
+
+def test_run_real_does_not_label_p2_when_the_off_tick_share_is_within_the_limit(
+        tmp_path, capsys, monkeypatch):
+    _real_like_database(tmp_path / "kalshi.sqlite")
+    monkeypatch.setattr(run_real, "tag_problem", lambda: None)
+    out = tmp_path / "real"
+    monkeypatch.setattr(run_real, "off_tick_share", lambda checks: 0.05)  # at the limit: allowed
+    assert run_real.main(["--db", str(tmp_path / "kalshi.sqlite"), "--out", str(out),
+                          *[f"--set={a}" for a in SMALL]]) == 0
+    assert "of the kept trades are off the 0.01 USD tick" not in (out / "tables.md").read_text()
+    text = (out / "tables.md").read_text()
+    assert "against the 5% above which P2 is labelled exploratory" in text  # K9 gives the limit
+
+
 def test_run_real_refuses_a_database_of_the_older_schema(tmp_path, capsys):
     path = tmp_path / "old.sqlite"
     with closing(sqlite3.connect(path)) as conn:
@@ -230,7 +276,7 @@ def test_provenance_problems_in_a_temporary_repository(tmp_path):
     tagged = _head(repo)
     assert any("cannot be compared" in p for p in run_real.provenance_problems([_run(tagged)],
                                                                                repo))
-    _git(repo, "tag", "real-run")
+    _annotate(repo, "2026-11-13T09:00:00Z")  # an hour before the fetches below
     assert run_real.provenance_problems([_run(tagged)], repo) == []
     (repo / "README.md").write_text("changed\n")  # not a guarded file
     _git(repo, "commit", "-q", "-am", "readme")
@@ -252,6 +298,82 @@ def test_provenance_problems_in_a_temporary_repository(tmp_path):
     missing = run_real.provenance_problems([_run("0" * 40)], repo)
     assert len(missing) == 1 and "cannot be compared with the tag real-run" in missing[0]
     assert "no record of its fetch" in run_real.provenance_problems([], repo)[0]
+
+
+def _repository(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.py").write_text("x = 1\n")
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "first")
+    return repo, _head(repo)
+
+
+def test_tag_created_is_the_date_of_an_annotated_tag_and_nothing_else(tmp_path):
+    repo, _ = _repository(tmp_path)
+    assert tag_created(repo) is None  # no tag
+    _git(repo, "tag", "real-run")
+    assert tag_created(repo) is None  # a lightweight tag has no creation time
+    _git(repo, "tag", "-d", "real-run")
+    _annotate(repo, "2026-11-13T09:30:00Z")
+    created = tag_created(repo)
+    assert created == datetime.datetime(2026, 11, 13, 9, 30, tzinfo=datetime.UTC)
+    assert created.tzinfo is not None  # aware: comparable with the times of the fetches
+
+
+def test_a_lightweight_tag_is_a_departure_because_it_has_no_creation_time(tmp_path):
+    repo, commit = _repository(tmp_path)
+    _git(repo, "tag", "real-run")
+    assert run_real.tag_problem(repo) is None  # the content check passes
+    assert run_real.provenance_problems([_run(commit)], repo) == [
+        "the tag real-run is not annotated (git tag -a), so it has no creation time and it "
+        "cannot be shown that it was made before the fetch"]
+
+
+def test_a_fetch_that_started_before_the_tag_was_created_is_a_departure(tmp_path):
+    repo, commit = _repository(tmp_path)
+    _annotate(repo, "2026-11-13T10:00:00Z")
+    assert run_real.provenance_problems([_run(commit, started="2026-11-13T10:00:00Z")],
+                                        repo) == []  # at the same second: not before
+    before = run_real.provenance_problems([_run(commit, started="2026-11-13T09:59:59Z")], repo)
+    assert before == ["a fetch started 2026-11-13T09:59:59+00:00, before the tag real-run was "
+                      "created (2026-11-13T10:00:00+00:00)"]
+    # the earliest of several fetches counts, whatever its place in the record
+    runs = [_run(commit, started="2026-11-14T10:00:00Z"),
+            _run(commit, started="2026-11-12T23:00:00Z")]
+    assert run_real.provenance_problems(runs, repo) == [
+        "a fetch started 2026-11-12T23:00:00+00:00, before the tag real-run was created "
+        "(2026-11-13T10:00:00+00:00)"]
+    # a start time without an offset is read as UTC, the zone of the record
+    assert run_real.provenance_problems([_run(commit, started="2026-11-13T09:00:00")], repo)
+    assert run_real.provenance_problems([_run(commit, started="2026-11-13T11:00:00")], repo) == []
+    # a time zone is respected: 06:00 at -05:00 is 11:00 UTC
+    assert run_real.provenance_problems(
+        [_run(commit, started="2026-11-13T06:00:00-05:00")], repo) == []
+
+
+def test_a_start_time_that_cannot_be_read_is_a_departure(tmp_path):
+    repo, commit = _repository(tmp_path)
+    _annotate(repo, "2026-11-13T10:00:00Z")
+    for bad in ("yesterday", None):
+        problems = run_real.provenance_problems([_run(commit, started=bad)], repo)
+        assert problems == [f"a fetch has no readable start time ({bad!r}), so it cannot be "
+                            "compared with the creation time of the tag real-run"]
+
+
+def test_without_the_tag_the_date_gives_no_departure_of_its_own(tmp_path):
+    repo, commit = _repository(tmp_path)
+    problems = run_real.provenance_problems([_run(commit)], repo)
+    assert len(problems) == 1 and "cannot be compared with the tag real-run" in problems[0]
+
+
+def test_off_tick_share_is_the_share_of_the_kept_trades_off_the_tick():
+    _, markets, events = _hand_dataset()
+    checks = data_checks(markets, events, *_api_fields())
+    assert off_tick_share(checks) == 2 / 5
+    none = {"by_series": {"all": {"trades kept": 0, "off the 0.01 tick": 0}}}
+    assert off_tick_share(none) is None  # nothing was kept: no share, no label
 
 
 def test_run_real_prints_the_fetches_and_writes_their_departures(tmp_path, capsys, monkeypatch):

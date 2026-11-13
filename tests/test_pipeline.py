@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from kalshi_mm import run_real
+from kalshi_mm import protocol, run_real
 from kalshi_mm.backtest import walk_forward
 from kalshi_mm.calibration import skill_interval, walk_forward_recalibration
 from kalshi_mm.markout import release_effect, scaled_adverse_selection, trade_markouts
@@ -177,6 +177,15 @@ def _per_release(frame, column):
     return evaluated.groupby(["event", "policy"])[column].sum().unstack("policy").sort_index()
 
 
+def _fill_premium(frame, policy):
+    """The premium per unit of 4 m (1 - m) at the fills of one policy, from the rows of the
+    markets: the mean over the contracts filled in the evaluated releases."""
+    rows = frame[frame["evaluated"] & (frame["policy"] == policy) & (frame["contracts"] > 0.0)]
+    if rows.empty:
+        return float("nan")
+    return float((rows["fill_premium"] * rows["contracts"]).sum() / rows["contracts"].sum())
+
+
 def test_the_reported_parts_of_p2_are_recomputed_from_the_walk_forward_frame(run):
     results, _, settings = run
     ds, p2 = results.dataset, results.p2
@@ -191,6 +200,7 @@ def test_the_reported_parts_of_p2_are_recomputed_from_the_walk_forward_frame(run
             assert p2["totals"][policy][column] == pytest.approx(expected)
         live = frame.loc[frame["evaluated"] & (frame["policy"] == policy), "quotes_live_share"]
         assert p2["totals"][policy]["quotes_live_share"] == pytest.approx(live.mean())
+        assert p2["totals"][policy]["fill_premium"] == pytest.approx(_fill_premium(frame, policy))
     series = frame["market"].map(ds.market_series)
     assert set(p2["by_series"]) == set(series)
     for name, effect in p2["by_series"].items():
@@ -215,9 +225,15 @@ def test_the_halves_of_p2_split_the_releases_in_time_at_the_median(run):
 def test_the_sensitivity_runs_of_p2_change_one_setting_of_the_quote_parameters(run):
     results, _, settings = run
     ds, p2 = results.dataset, results.p2
+    # the premium at the fills of the two policies of the primary pair decides the last scale
+    first, second = PRIMARY_PAIR
+    scale = settings.quote.flat_scale * (
+        _fill_premium(p2["frame"], first) / _fill_premium(p2["frame"], second))
+    scaled = f"flat premium scaled to the premium at the fills of {first} (F = {scale:.2f})"
     variants = {
         "touch fill rule": dataclasses.replace(settings.quote, fill_rule="touch"),
         "maker fee coefficient 0": dataclasses.replace(settings.quote, maker_fee_coeff=0.0),
+        scaled: dataclasses.replace(settings.quote, flat_scale=scale),
     }
     assert set(p2["sensitivity"]) == set(variants)
     for name, params in variants.items():
@@ -225,6 +241,60 @@ def test_the_sensitivity_runs_of_p2_change_one_setting_of_the_quote_parameters(r
         pnl = _per_release(frame, "pnl")
         diff = pnl[PRIMARY_PAIR[0]] - pnl[PRIMARY_PAIR[1]]
         assert p2["sensitivity"][name] == paired_mean(diff.to_numpy(), settings)
+    assert scale != 1.0 and p2["totals"][first]["fill_premium"] > 0.0
+
+
+def test_the_scaled_flat_premium_of_p2_quotes_the_premium_of_release_aware_at_its_fills(run):
+    results, _, settings = run
+    ds = results.dataset
+    first, second = PRIMARY_PAIR
+    (name,) = [n for n in results.p2["sensitivity"] if n.startswith("flat premium scaled")]
+    scale = float(re.search(r"F = ([0-9.]+)\)", name).group(1))
+    params = dataclasses.replace(settings.quote, flat_scale=scale)
+    frame = walk_forward(ds.tape, ds.markets, ds.events, (first, second), params)
+    # the scale is rounded to two decimals in the name: the premiums at the fills agree closely
+    aware = _fill_premium(results.p2["frame"], first)
+    assert _fill_premium(frame, second) == pytest.approx(aware, rel=0.25)
+    assert _fill_premium(frame, second) > _fill_premium(results.p2["frame"], second)
+    assert _fill_premium(frame, first) == pytest.approx(aware, rel=1e-12)  # not changed by F
+
+
+def test_the_scaled_flat_premium_of_p2_multiplies_the_scale_that_the_settings_have(run):
+    results, _, settings = run
+    doubled = dataclasses.replace(
+        settings, quote=dataclasses.replace(settings.quote, flat_scale=2.0))
+    p2 = p2_pricing(results.dataset, doubled)
+    first, second = PRIMARY_PAIR
+    scale = 2.0 * _fill_premium(p2["frame"], first) / _fill_premium(p2["frame"], second)
+    assert [n for n in p2["sensitivity"] if n.startswith("flat premium scaled")] == [
+        f"flat premium scaled to the premium at the fills of {first} (F = {scale:.2f})"]
+
+
+def test_the_scaled_run_of_p2_is_undefined_when_a_policy_has_no_premium_at_its_fills(
+        run, monkeypatch):
+    results, _, settings = run
+    ds = results.dataset
+    calls = []
+    real = protocol.walk_forward
+
+    def no_flat_premium(tape, markets, events, policies, params):
+        calls.append(tuple(policies))
+        frame = real(tape, markets, events, policies, params)
+        if len(policies) > 1:  # the five-policy run: flat_matched is never filled
+            frame.loc[frame["policy"] == "flat_matched", ["contracts", "fill_premium"]] = (
+                0.0, float("nan"))
+        return frame
+
+    monkeypatch.setattr(protocol, "walk_forward", no_flat_premium)
+    p2 = p2_pricing(ds, settings)
+    assert "flat premium scaled to the premium at the fills of release_aware (undefined)" in (
+        p2["sensitivity"])
+    assert p2["sensitivity"][
+        "flat premium scaled to the premium at the fills of release_aware (undefined)"] is None
+    assert not any(name.startswith("flat premium scaled to the premium at the fills of "
+                                   "release_aware (F") for name in p2["sensitivity"])
+    # the touch rule and the fee are run, a scale that is undefined is not
+    assert calls.count(PRIMARY_PAIR) == 2
 
 
 def _paired(world):
@@ -239,6 +309,25 @@ def _paired(world):
         markets.loc[markets["event"] == second, ["open_ts", "close_ts"]] += shift
         events.loc[events["event"] == second, "release_ts"] = release[first]
     return tape, markets, events
+
+
+def test_the_off_tick_share_reaches_the_family_and_the_tables(world):
+    settings = with_overrides(DEFAULT, [*SMALL, "min_releases=10"])  # 21 releases are enough
+    args = (world.tape, world.markets, world.events, "synthetic", settings)
+    plain = run_protocol(*args)
+    assert plain.off_tick_share is None
+    assert plain.family["P2"]["verdict"] in ("supported", "not supported")
+    assert "off the 0.01 USD tick" not in tables_markdown(plain)
+    same = run_protocol(*args, off_tick_share=0.05)  # at the limit of the protocol: allowed
+    assert same.off_tick_share == 0.05 and same.family == plain.family
+    assert "off the 0.01 USD tick" not in tables_markdown(same)  # nor does the sample note say so
+    coarse = run_protocol(*args, off_tick_share=0.0501)
+    assert coarse.off_tick_share == 0.0501
+    assert coarse.family["P2"]["verdict"] == "exploratory"
+    assert coarse.family["P2"]["p_one_sided"] == plain.family["P2"]["p_one_sided"]
+    assert coarse.family["P1"] == plain.family["P1"] and coarse.family["P3"] == plain.family["P3"]
+    assert ("P2 is exploratory because 5.0% of the kept trades are off the 0.01 USD tick, more "
+            "than the 5% that the protocol allows.") in tables_markdown(coarse)
 
 
 def test_a_release_with_two_markets_adds_up_the_profit_of_its_markets(world):
@@ -409,7 +498,7 @@ def test_run_real_wants_the_tag_and_then_reads_the_database_read_only(
 
     monkeypatch.setattr(run_real, "tag_problem", lambda: "the tag real-run does not exist")
     assert run_real.main(args) == 2 and not out.exists()
-    assert "git tag real-run" in capsys.readouterr().out
+    assert "git tag -a real-run" in capsys.readouterr().out
 
     assert run_real.main([*args, "--no-tag-check"]) == 0
     printed = capsys.readouterr().out
