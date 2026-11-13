@@ -261,6 +261,16 @@ def test_clipping_keeps_a_tick_between_the_quotes_at_the_edges():
     assert (bid, ask) == (0.98, 0.99)
 
 
+def test_an_empty_spread_opens_a_tick_upwards_unless_the_top_tick_is_reached():
+    # with k = 1e12 the half-spread is about 1e-12 USD: the unrounded quotes sit on the mid, and
+    # a mid that is on a tick gives the same tick on both sides before the quotes are separated
+    flat = QuoteParams(k=1e12, min_mid=0.01, max_mid=0.99)
+    assert quote("always_on", 0.50, 0.0, 60.0, 0.0, params=flat) == (0.50, 0.51)
+    assert quote("always_on", 0.98, 0.0, 60.0, 0.0, params=flat) == (0.98, 0.99)
+    assert quote("always_on", 0.99, 0.0, 60.0, 0.0, params=flat) == (0.98, 0.99)
+    assert quote("always_on", 0.01, 0.0, 60.0, 0.0, params=flat) == (0.01, 0.02)
+
+
 def test_the_mid_range_is_inclusive_and_a_nan_mid_gives_no_quote():
     assert quote("always_on", 0.03, 0.0, 60.0, 0.1) is not None
     assert quote("always_on", 0.97, 0.0, 60.0, 0.1) is not None

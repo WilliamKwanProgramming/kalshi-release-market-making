@@ -177,6 +177,67 @@ def test_inventory_known_at_each_decision(monkeypatch):
     assert [(s[4], s[5]) for s in seen] == [(0.47, 0.53)] * 6
 
 
+def test_a_fill_at_the_decision_time_is_known_to_that_decision(monkeypatch):
+    """The decision at t_1 = 9700 reads the prints up to and including 9700, and so it knows the
+    fill of the sale at 9700 (3 of the 4 contracts left on the bid of the first interval)."""
+    seen = record_quotes(monkeypatch)
+    rows = PRE + [(9650.0, SELL, 0.45, 6.0), (9700.0, SELL, 0.45, 3.0)]
+    assert run(rows).inventory_end == 9.0
+    assert [s[1] for s in seen] == [0.0, 9.0, 9.0, 9.0, 9.0, 9.0]
+    seen.clear()
+    mirrored = [(ts, -s, 1.0 - p, c) for ts, s, p, c in rows]  # the ask side, upside down
+    assert run(mirrored).inventory_end == -9.0
+    assert [s[1] for s in seen] == [0.0, -9.0, -9.0, -9.0, -9.0, -9.0]
+
+
+def test_the_known_inventory_catches_up_in_an_interval_without_prints(monkeypatch):
+    seen = record_quotes(monkeypatch)
+    # the sale at 9700.5 fills the first interval's bid after the decision at 9700; no print
+    # follows, and from the decision at 9760 on the fill is known
+    r = run(PRE + [(9700.5, SELL, 0.45, 5.0)])
+    assert r.inventory_end == 5.0
+    assert [s[1] for s in seen] == [0.0, 0.0, 5.0, 5.0, 5.0, 5.0]
+
+
+def test_the_known_inventory_catches_up_after_a_decision_without_a_quote(monkeypatch):
+    seen = record_quotes(monkeypatch)
+    rows = PRE + [
+        (9690.0, BUY, 0.99, 1.0),  # fills 1 at the ask 0.53 of the first interval: q -1
+        (9690.5, SELL, 0.98, 1.0),  # the proxy at 9700 is 0.985: no quote decided at 9700
+        (9700.5, SELL, 0.45, 5.0),  # still the first interval's bid: q +4; the proxy is 0.72 again
+    ]
+    r = run(rows)
+    assert (r.fills, r.inventory_end, r.quotes_live_share) == (2, 4.0, pytest.approx(5 / 6))
+    assert [s[1] for s in seen] == [0.0, -1.0, 4.0, 4.0, 4.0, 4.0]
+    assert [s[0] for s in seen] == pytest.approx([0.5, 0.985, 0.72, 0.72, 0.72, 0.72])
+    assert math.isnan(seen[1][4]) and math.isnan(seen[1][5])  # no quote at the second decision
+
+
+def test_the_volatility_of_a_decision_is_the_larger_of_the_estimate_and_the_floor(monkeypatch):
+    seen = record_quotes(monkeypatch)
+    # a buy and, a second later, a sale every 300 s from 7000: the proxy alternates between two
+    # levels, so the realized volatility is defined and differs from one decision to the next
+    rows = [
+        (7000.0 + 300.0 * i + lag, side, price, 1.0)
+        for i in range(10)
+        for lag, side, price in (
+            (0.0, BUY, 0.60 + 0.10 * (i % 2)),
+            (1.0, SELL, 0.50 + 0.10 * (i % 2)),
+        )
+    ]
+    ts, side, price, size = tape_of(rows)
+    decisions = RELEASE - HAND.window_hours * 3600.0 + HAND.refresh_s * np.arange(6)
+    vol = realized_logit_vol(ts, side, price, decisions, lookback_s=HAND.vol_lookback_s,
+                             stale_s=HAND.stale_s)
+    assert np.all(np.isfinite(vol)) and vol.min() < vol.max()
+    for floor in (0.0, 0.5 * (vol.min() + vol.max()), 2.0 * vol.max()):
+        seen.clear()
+        run(rows, floor=floor)
+        np.testing.assert_allclose([s[3] for s in seen], np.maximum(vol, floor), rtol=1e-12)
+    middle = 0.5 * (vol.min() + vol.max())
+    assert (vol < middle).any() and (vol > middle).any()  # the middle floor binds in some decisions
+
+
 def test_no_fill_before_the_first_quotes_are_live_and_none_after_the_release():
     rows = PRE + [(9640.5, SELL, 0.45, 5.0), (9641.0, BUY, 0.55, 5.0)]
     assert run(rows).fills == 0
