@@ -99,6 +99,21 @@ def test_public_markouts_come_from_the_public_columns_and_carry_the_event_positi
     assert list(m["event_no"]) == by_hand
 
 
+def test_the_tape_handed_to_trade_markouts_has_no_latent_column(monkeypatch):
+    seen = []
+    real = rc.trade_markouts
+
+    def spy(tape, *args, **kwargs):
+        seen.append(list(tape.columns))
+        return real(tape, *args, **kwargs)
+
+    monkeypatch.setattr(rc, "trade_markouts", spy)
+    world = small_world("planted", 5, 3)
+    assert any(c.startswith("latent_") for c in world.tape.columns)
+    rc.public_markouts(world)
+    assert len(seen) == 1 and not [c for c in seen[0] if c.startswith("latent_")]
+
+
 # ------------------------------------------------------------------------------------- oracle
 def tiny_tape():
     """Market A: five trades, market B: two. Times in seconds, mids are latent beliefs."""
@@ -205,7 +220,7 @@ def test_saturation_share_counts_events_by_their_last_latent_mid():
 
 # ------------------------------------------------------------------------------ bucket table
 def hand_markouts():
-    tau = np.array([3.0, 10.0, 20.0, 40.0, 100.0, 200.0, 400.0, 500.0])
+    tau = np.array([3.0, 10.0, 30.0, 40.0, 100.0, 200.0, 400.0, 500.0])
     return pd.DataFrame({
         "tau_min": tau,
         "bucket": bucket_index(tau),
@@ -216,8 +231,9 @@ def hand_markouts():
 
 def test_bucket_table_by_hand():
     """One trade per bucket except the last bucket, which has a trade without a proxy (left out of
-    every column), and the (15, 30] bucket, whose scaled value is missing. Cents are 100 times the
-    USD values; the bias is tape minus oracle; D is the near row minus the quiet row."""
+    every column), and the (15, 30] bucket, whose scaled value is missing and whose trade is
+    exactly 30 minutes before the release (still near). Cents are 100 times the USD values; the
+    bias is tape minus oracle; D is the near row minus the quiet row."""
     oracle = np.array([0.011, 0.022, 0.033, 0.044, 0.055, 0.066, 0.077, 0.088])
     impact = np.array([0.012, 0.024, 0.036, 0.048, 0.060, 0.072, 0.084, 0.096])
     params = WorldParams()
@@ -236,7 +252,7 @@ def test_bucket_table_by_hand():
     np.testing.assert_allclose(scaled[[0, 1, 3, 4, 5, 6, 7, 8]],
                                [10, 20, 40, 50, 60, 70, 15, 15 - 70], atol=1e-12)
     assert np.isnan(scaled[2])  # no trade of (15, 30] has a scaled value
-    tau_mean = [3, 10, 20, 40, 100, 200, 400, (3 + 10 + 20) / 3]
+    tau_mean = [3, 10, 30, 40, 100, 200, 400, (3 + 10 + 30) / 3]
     np.testing.assert_allclose(t["tau_mean_min"].iloc[:8], tau_mean, atol=1e-12)
     assert np.isnan(t["tau_mean_min"].iloc[8])
     pi = informed_share(np.array(tau_mean) / 60.0, params)
@@ -513,6 +529,29 @@ def test_replications_are_deterministic_and_differ_between_replications_and_worl
     assert not a["D"].equals(rc.run_replication("flat_null", 0, (8,), 40)["D"])
 
 
+def test_surge_share_leaves_out_the_resamples_where_the_planted_effect_is_zero():
+    """Three events with one trade in each window, so D of a resample is sum(w * d) / 3: with
+    d = [2, -1, 0] in the planted world and half of it in spec_null the share is 0.5 in every
+    resample where the planted D is not zero and 0 / 0 in the others."""
+    ones = np.ones(3)
+
+    def sums(near, quiet):
+        return {"near_n": ones, "quiet_n": ones, "near_sum": np.array(near),
+                "quiet_sum": np.array(quiet)}
+
+    a = sums([3.0, 1.0, 2.0], [1.0, 2.0, 2.0])
+    b = sums([2.0, 1.0, 1.0], [1.0, 1.5, 1.0])
+    planted = stub_population("planted", {"raw_0_30": stub_effect(1 / 3, 0, 0)}, a)
+    spec = stub_population("spec_null", {"raw_0_30": stub_effect(1 / 6, 0, 0)}, b)
+    out = rc.surge_share(planted, spec, 200, seed=5)
+    weights = cluster_weights(3, 200, np.random.default_rng(5))
+    zero = int(np.sum(2 * weights[:, 0] - weights[:, 1] == 0))  # planted D of the resample is 0
+    assert zero > 0
+    assert out["B_undefined"] == zero
+    assert out["share"] == pytest.approx(0.5, rel=1e-14)
+    assert out["ci"] == pytest.approx((0.5, 0.5), rel=1e-12)
+
+
 def test_replications_do_not_read_a_latent_column(monkeypatch):
     plain = rc.run_replication("planted", 1, (6, 10), 40)
 
@@ -632,6 +671,18 @@ def test_run_study_shapes_and_consistency(study):
     assert res.surge["ci"][0] <= res.surge["ci"][1]
 
 
+def test_run_study_uses_the_population_of_seed_zero_and_replications_zero_to_reps_minus_one(study):
+    B, sizes = 40, (6, 12)
+    pops = {w: rc.population_world(w, 40, rc.POP_SEED, B) for w in rc.WORLDS}
+    for w in rc.WORLDS:
+        assert study.populations[w].effects == pops[w].effects
+    reps = pd.concat([rc.run_replication(w, r, sizes, B) for w in rc.WORLDS for r in range(2)],
+                     ignore_index=True)
+    truth = {(w, e.key): pops[w].effects[e.key]["D"] for w in rc.WORLDS for e in rc.ESTIMANDS}
+    pd.testing.assert_frame_equal(study.coverage, rc.coverage_table(reps, truth))
+    pd.testing.assert_frame_equal(study.power, rc.power_table(reps, rc.effects_frame(pops)))
+
+
 def test_tables_are_eight_blocks_the_readme_parser_reads(study, tmp_path):
     text = rc.tables_markdown(study)
     (tmp_path / "markouts").mkdir()
@@ -676,6 +727,12 @@ def test_the_statements_about_the_surge_and_the_level_follow_the_numbers(study):
             "neither (flat_null, -0.16 cents), so D is a per-contract cost measured on the tape, "
             "not an estimate of the informed share; scaled D near (5, 30] is the cleaner read: "
             "in flat_null it is +0.03 cents, with an interval that contains zero") in reading
+    mixed = ("per-contract cost measured on the tape, not an estimate of the informed share")
+    one = reading_of(rc.tables_markdown(with_effects(study, (0.41, "positive"), (-0.02, "zero"),
+                                                     (0.03, "zero"))), "M3")
+    other = reading_of(rc.tables_markdown(with_effects(study, (0.02, "zero"), (-0.16, "negative"),
+                                                       (0.03, "zero"))), "M3")
+    assert mixed in one and mixed in other  # one non-zero sign is enough for the statement
     flat = with_effects(study, (0.01, "zero"), (-0.01, "zero"), (0.12, "positive"))
     reading = reading_of(rc.tables_markdown(flat), "M3")
     assert ("raw D is zero with the surge alone (spec_null, +0.01 cents) and zero with neither"
@@ -702,6 +759,10 @@ def test_saturation_surge_share_and_cut_note_come_from_the_results(study):
         assert cut + "6-minute budget." in reading_of(text, table_id)
     full = rc.tables_markdown(res._replace(design={**res.design, "reps": 200}))
     assert "design asked for" not in full and "6-minute" not in full
+
+
+def test_coverage_reading_refers_to_the_largest_size_when_200_was_not_tried(study):
+    assert "at n = 12 the cluster interval covers" in reading_of(rc.tables_markdown(study), "M5")
 
 
 def test_coverage_reading_gives_the_ranges_and_the_error_of_the_population_value(study):
