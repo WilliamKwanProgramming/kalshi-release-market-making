@@ -33,6 +33,7 @@ WINDOW_HOURS = 30.0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Run the rehearsal of the module docstring and write its files to ``--out``."""
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--out", type=Path, default=REPO / "results" / "rehearsal")
     ap.add_argument("--n-events", type=int, default=N_EVENTS)

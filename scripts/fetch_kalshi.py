@@ -73,6 +73,7 @@ def utc_now() -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """The command line of the fetch script (its options and their defaults)."""
     parser = argparse.ArgumentParser(
         description="Fetch Kalshi markets and trades into SQLite (see the module docstring).",
     )

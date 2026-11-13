@@ -115,6 +115,7 @@ def broken_links(readme: str) -> list[str]:
 
 
 def main() -> int:
+    """Run the three checks of the module docstring; the exit status is 1 if any fails."""
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     problems = 0
     for target in broken_links(readme):

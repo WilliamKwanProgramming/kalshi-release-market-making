@@ -59,6 +59,7 @@ def fill(readme: str, tables: dict[str, str]) -> str:
 
 
 def main() -> int:
+    """Paste the tables of ``results/*/tables.md`` into the README, or compare with ``--check``."""
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--check", action="store_true", help="do not write, only compare")
     ap.add_argument("--readme", type=Path, default=REPO / "README.md")

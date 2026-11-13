@@ -815,6 +815,7 @@ def _parse_sizes(text: str) -> tuple[int, ...]:
 
 
 def main(argv: list[str] | None = None) -> None:
+    """Run the study of the module docstring and write its files to ``--out``."""
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", type=Path, default=Path("results/markouts"))
     ap.add_argument("--reps", type=int, default=REPS, help="replications per world")

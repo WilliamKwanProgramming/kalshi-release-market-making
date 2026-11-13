@@ -23,6 +23,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def git(*args: str) -> str:
+    """The output of ``git <args>`` in the repository, or ``"unknown"`` if git fails."""
     try:
         return subprocess.run(["git", "-C", str(REPO), *args], capture_output=True, text=True,
                               check=True).stdout.strip()
@@ -31,6 +32,7 @@ def git(*args: str) -> str:
 
 
 def main() -> None:
+    """Write the manifest of a reproduce run to the file given by ``--out``."""
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--seconds", type=int, required=True)
     ap.add_argument("--cpu-seconds", default="unknown")
