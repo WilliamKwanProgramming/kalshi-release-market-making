@@ -80,9 +80,10 @@ __all__ = ["PAIRS", "PRIMARY", "SECONDARY", "StudyConfig", "main", "run_study"]
 
 MODULE = "kalshi_mm.experiments.backtest_study"
 SEED = 20261113  # the seed of docs/protocol.md; the bootstrap generators are keyed by it
-# "a minus b", the more elaborate policy first. The primary pair is the same as the primary pair
-# of docs/protocol.md (P2); the secondary pair is the primary pair of the first version of the
-# design, kept because its sign follows the level of the pooled premium (B8, B9).
+# "a minus b", the more elaborate policy first. The primary pair is the primary pair of the
+# protocol analysis (kalshi_mm.protocol.PRIMARY_PAIR); the secondary pair is the primary pair of
+# the first version of the design, kept because its sign follows the level of the pooled premium
+# (B8, B9).
 PRIMARY = ("release_aware", "flat_matched")
 SECONDARY = ("release_aware", "pooled_premium")
 PAIRS = (

@@ -1345,7 +1345,7 @@ mutant("backtest study: B9 table: the matched premium taken at the first scale",
        STUDY, STUDY_FILE,
        "matched = first[\"premium_flat\"] / first[\"flat_scale\"]",
        "matched = first[\"premium_flat\"]")
-mutant("backtest study: B9 table: not every policy loses money is not checked",
+mutant("backtest study: B9 says that every policy loses money whatever B2 shows",
        STUDY, STUDY_FILE,
        "if losing == len(POLICIES):",
        "if losing >= 0:")
