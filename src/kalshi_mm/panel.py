@@ -9,9 +9,11 @@ seconds, prices are USD per contract on the YES side):
   bought YES, -1 the taker sold YES), sorted by (``market``, ``ts``, ``seq``).
 
 The database has one table for each, ``events``, ``markets`` and ``trades``, and a ``meta`` table
-with the key ``source``. ``source`` says where the rows come from: ``synthetic`` for rows made by
-``kalshi_mm.world`` and ``kalshi-public-api`` for rows written from Kalshi's public API. The
-analysis reads it with :func:`get_source` to label its tables, and a database never mixes the two.
+with the key ``source`` and, for a database written by ``scripts/fetch_kalshi.py``, the record of
+its fetches (:func:`begin_fetch_run`). ``source`` says where the rows come from: ``synthetic``
+for rows made by ``kalshi_mm.world`` and ``kalshi-public-api`` for rows written from Kalshi's
+public API. The analysis reads it with :func:`get_source` to label its tables, and a database never
+mixes the two.
 
 The ``event`` of a trade is not stored twice: the trade has a market, the market has an event.
 Columns of a frame that the tables do not have, such as the ``latent_*`` columns of a synthetic
@@ -41,20 +43,26 @@ tape first; the tests compare the two exactly.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 __all__ = [
+    "FETCH_FIELDS",
     "PANEL_SQL",
     "SCHEMA_SQL",
     "SOURCES",
     "SOURCE_KALSHI_API",
     "SOURCE_SYNTHETIC",
     "OldSchemaError",
+    "begin_fetch_run",
     "create_schema",
+    "end_fetch_run",
+    "fetch_runs",
     "get_source",
     "loaded_markets",
     "read_api_fields",
@@ -180,6 +188,56 @@ def get_source(conn: sqlite3.Connection) -> str:
     if row is None:
         raise ValueError("the database has no source: nothing was written with write_dataset")
     return str(row[0])
+
+
+# The record of one fetch: when it started and finished (ISO 8601, UTC) and the state of the
+# repository it ran from (the commit, and "true" or "false" for uncommitted changes; "unknown" for
+# both when git could not tell).
+FETCH_FIELDS = ("fetch_started_utc", "fetch_finished_utc", "git_commit", "git_dirty")
+
+
+def fetch_runs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Every recorded fetch, the first first, as dicts of :data:`FETCH_FIELDS` (a fetch that never
+    finished has ``fetch_finished_utc`` None); an empty list if none was recorded."""
+    row = conn.execute("SELECT value FROM meta WHERE key = 'fetch_runs'").fetchone()
+    return [] if row is None else list(json.loads(row[0]))
+
+
+def _put_runs(conn: sqlite3.Connection, runs: list[dict[str, Any]]) -> None:
+    conn.execute("INSERT INTO meta (key, value) VALUES ('fetch_runs', ?) "
+                 "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (json.dumps(runs),))
+
+
+def begin_fetch_run(conn: sqlite3.Connection, *, started_utc: str, git_commit: str,
+                    git_dirty: str) -> None:
+    """Record the start of a fetch in ``meta``, in one transaction.
+
+    The run is appended to the JSON list under ``fetch_runs``. The keys ``fetch_started_utc``,
+    ``git_commit`` and ``git_dirty`` are written by the first fetch only, so a later fetch into
+    the same database never replaces them; the list keeps every later one.
+    """
+    with conn:
+        runs = fetch_runs(conn)
+        runs.append({"fetch_started_utc": started_utc, "fetch_finished_utc": None,
+                     "git_commit": git_commit, "git_dirty": git_dirty})
+        _put_runs(conn, runs)
+        conn.executemany("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)",
+                         [("fetch_started_utc", started_utc), ("git_commit", git_commit),
+                          ("git_dirty", git_dirty)])
+
+
+def end_fetch_run(conn: sqlite3.Connection, *, finished_utc: str) -> None:
+    """Record the end of the last fetch begun with :func:`begin_fetch_run`; the key
+    ``fetch_finished_utc`` is written only when that fetch is the first."""
+    with conn:
+        runs = fetch_runs(conn)
+        if not runs:
+            raise ValueError("no fetch was begun in this database")
+        runs[-1]["fetch_finished_utc"] = finished_utc
+        _put_runs(conn, runs)
+        if len(runs) == 1:
+            conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES "
+                         "('fetch_finished_utc', ?)", (finished_utc,))
 
 
 def loaded_markets(conn: sqlite3.Connection) -> set[str]:

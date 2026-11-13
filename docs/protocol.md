@@ -109,6 +109,9 @@ releases kept for P1 and the releases after the burn-in for P2. P3 is not labell
 4. The counts of kept trades off the 0.01 USD tick, of trade ids returned by both trade endpoints
    and of groups of trades alike across the two endpoints are printed, by series, and read (table
    K9); they are reported, not used to remove trades.
+5. The record of the fetches (start, end, commit, uncommitted changes) is printed; a fetch from a
+   commit other than the tag `real-run` in the guarded files, or with uncommitted changes, is a
+   departure written to `DEVIATIONS.md`.
 
 ## Changes since the first commit
 

@@ -11,7 +11,10 @@ each release and its markets' close times, and three events to compare with the 
 price grids of the markets). It then refuses to run unless the files
 that decide a result (``src``, ``scripts``, ``docs/protocol.md``, ``docs/model.md``,
 ``pyproject.toml``) are those of the commit tagged ``real-run``; ``--no-tag-check`` runs anyway and
-writes the departure to ``DEVIATIONS.md``, as every ``--set`` that changes a setting does.
+writes the departure to ``DEVIATIONS.md``, as every ``--set`` that changes a setting does. The
+record of the fetches (``panel.fetch_runs``) is printed and written; a database without one, a
+fetch run from a repository with uncommitted changes and a fetch whose commit differs from the tag
+in the guarded files are departures too (:func:`provenance_problems`).
 Results go to ``results/real`` with the table letter K.
 """
 
@@ -32,11 +35,26 @@ import pandas as pd
 
 from kalshi_mm.experiments.common import REPO, Manifest
 from kalshi_mm.ingest import lookalike_groups
-from kalshi_mm.panel import get_source, read_api_fields, read_dataset, schema_problem
+from kalshi_mm.panel import (
+    FETCH_FIELDS,
+    fetch_runs,
+    get_source,
+    read_api_fields,
+    read_dataset,
+    schema_problem,
+)
 from kalshi_mm.protocol import DEFAULT, data_label, run_protocol, with_overrides
 from kalshi_mm.protocol_report import write_results
 
-__all__ = ["data_checks", "describe_checks", "describe_dataset", "main", "off_tick", "tag_problem"]
+__all__ = [
+    "data_checks",
+    "describe_checks",
+    "describe_dataset",
+    "main",
+    "off_tick",
+    "provenance_problems",
+    "tag_problem",
+]
 
 TAG = "real-run"
 GUARDED = ("src", "scripts", "docs/protocol.md", "docs/model.md", "pyproject.toml")
@@ -164,6 +182,39 @@ def tag_problem(repo: Path = REPO) -> str | None:
     return None
 
 
+def provenance_problems(runs: Sequence[dict[str, Any]], repo: Path = REPO) -> list[str]:
+    """Departures from docs/protocol.md that the record of the fetches shows, as sentences.
+
+    ``runs`` is ``panel.fetch_runs`` of the database. A departure is: no record at all; a fetch
+    with ``git_dirty`` true; a fetch whose ``git_commit`` is unknown, not in ``repo`` or differs
+    from the tag ``real-run`` in the guarded files (``git diff --quiet <commit> real-run --
+    <guarded>``; the comparison is made once per commit).
+    """
+    if not runs:
+        return ["the database has no record of its fetch (fetch_started_utc, git_commit): it was "
+                "not written by scripts/fetch_kalshi.py with a record"]
+    problems = []
+    dirty = [r for r in runs if r["git_dirty"] == "true"]
+    if dirty:
+        problems.append(f"{len(dirty)} of {len(runs)} fetches ran from a repository with "
+                        f"uncommitted changes (git_dirty true), the first started "
+                        f"{dirty[0]['fetch_started_utc']}")
+    for commit in dict.fromkeys(r["git_commit"] for r in runs):
+        if commit == "unknown":
+            problems.append("a fetch has no recorded commit (git was unavailable)")
+            continue
+        diff = subprocess.run(["git", "-C", str(repo), "diff", "--quiet", commit, TAG, "--",
+                               *GUARDED], capture_output=True, text=True)
+        if diff.returncode == 1:
+            problems.append(f"a fetch ran from commit {commit}, whose guarded files differ "
+                            f"from the tag {TAG}")
+        elif diff.returncode != 0:
+            why = (diff.stderr.strip().splitlines() or ["git failed"])[0]
+            problems.append(f"the commit {commit} of a fetch cannot be compared with the tag "
+                            f"{TAG}: {why}")
+    return problems
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
@@ -200,13 +251,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         tape, markets, events = read_dataset(conn)
         api_trades, api_markets = read_api_fields(conn)
+        runs = fetch_runs(conn)
     finally:
         conn.close()
     print(describe_dataset(tape, markets, events))
     checks = data_checks(markets, events, api_trades, api_markets)
+    checks["fetch_runs"] = runs
     print("\n" + describe_checks(checks))
+    print("\nFetches recorded in the database:")
+    for r in runs:
+        print(f"  started {r['fetch_started_utc']}, finished {r['fetch_finished_utc']}, "
+              f"commit {r['git_commit']}, uncommitted changes {r['git_dirty']}")
+    extra: list[str] = provenance_problems(runs)
+    for problem in extra:
+        print(f"  departure: {problem}")
 
-    extra: list[str] = []
     problem = tag_problem()
     if problem:
         if not args.no_tag_check:
@@ -223,6 +282,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         *[f"count, {k}: {v}" for k, v in results.dataset.counts.items()],
         *[f"check, {k}: {v}" for k, v in checks["by_series"]["all"].items()],
         f"tag {TAG}: {'matches' if problem is None else problem}",
+        *[f"fetch {i}: " + ", ".join(f"{k} {r[k]}" for k in FETCH_FIELDS)
+          for i, r in enumerate(runs, start=1)],
     ]
     manifest.write(args.out, "run_real", [*names, "run_real.manifest.txt"])
     print("\nTests of the family (Holm-adjusted, one-sided):")

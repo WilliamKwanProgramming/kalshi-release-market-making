@@ -781,3 +781,32 @@ def test_the_panel_statement_does_one_index_seek_per_lookup_and_builds_no_index(
     assert len([p for p in plan if "CORRELATED SCALAR SUBQUERY" in p]) == 4
     assert len(seeks) == 4 and all("COVERING INDEX trades_by_side" in p for p in seeks)
     assert not [p for p in plan if "AUTOMATIC" in p or p.startswith("SCAN s")]
+
+
+# --------------------------------------------------------------------- the record of the fetches
+def test_the_first_fetch_is_kept_and_later_ones_are_added(conn):
+    def meta():
+        return dict(conn.execute("SELECT key, value FROM meta WHERE key != 'fetch_runs'"))
+
+    assert panel.fetch_runs(conn) == []
+    panel.begin_fetch_run(conn, started_utc="2026-11-13T10:00:00Z", git_commit="aaa",
+                          git_dirty="false")
+    assert panel.fetch_runs(conn) == [{"fetch_started_utc": "2026-11-13T10:00:00Z",
+                                       "fetch_finished_utc": None, "git_commit": "aaa",
+                                       "git_dirty": "false"}]
+    panel.end_fetch_run(conn, finished_utc="2026-11-13T11:00:00Z")
+    first = {"fetch_started_utc": "2026-11-13T10:00:00Z", "fetch_finished_utc":
+             "2026-11-13T11:00:00Z", "git_commit": "aaa", "git_dirty": "false"}
+    assert meta() == first and set(first) == set(panel.FETCH_FIELDS)
+    panel.begin_fetch_run(conn, started_utc="2026-11-14T10:00:00Z", git_commit="bbb",
+                          git_dirty="true")
+    panel.end_fetch_run(conn, finished_utc="2026-11-14T12:00:00Z")
+    assert meta() == first  # the second fetch replaced nothing
+    assert panel.fetch_runs(conn) == [first, {
+        "fetch_started_utc": "2026-11-14T10:00:00Z", "fetch_finished_utc": "2026-11-14T12:00:00Z",
+        "git_commit": "bbb", "git_dirty": "true"}]
+
+
+def test_a_fetch_must_begin_before_it_ends(conn):
+    with pytest.raises(ValueError, match="no fetch was begun"):
+        panel.end_fetch_run(conn, finished_utc="2026-11-13T11:00:00Z")

@@ -15,6 +15,7 @@ import json
 import pathlib
 import re
 import sqlite3
+import subprocess
 import types
 import urllib.parse
 from contextlib import closing
@@ -1644,3 +1645,102 @@ def test_a_moved_cutoff_is_a_warning(script, tmp_path):
     status, text = run_cli(script, tmp_path,
                            transport=make_api(canned_world(), cutoffs=[CUTOFFS, moved]))
     assert status == 0 and "warning: the historical cutoff moved" in text
+
+
+# ------------------------------------------------------------------- the record of the fetches
+def git(repo, *args):
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c",
+                    "user.email=test@example.com", "-c", "commit.gpgsign=false", *args],
+                   check=True, capture_output=True)
+
+
+@pytest.fixture
+def repo(tmp_path):
+    """A git repository with one commit and a clean tree."""
+    path = tmp_path / "repo"
+    path.mkdir()
+    (path / "a.txt").write_text("a\n")
+    git(path, "init", "-q")
+    git(path, "add", "-A")
+    git(path, "commit", "-q", "-m", "first")
+    return path
+
+
+def head(repo):
+    return subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True,
+                          text=True, check=True).stdout.strip()
+
+
+def test_git_state_reads_the_commit_and_whether_the_tree_is_dirty(script, repo, tmp_path):
+    assert script.git_state(repo) == (head(repo), "false")
+    (repo / "new.txt").write_text("untracked\n")
+    assert script.git_state(repo) == (head(repo), "true")
+    (repo / "new.txt").unlink()
+    (repo / "a.txt").write_text("changed\n")
+    assert script.git_state(repo) == (head(repo), "true")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert script.git_state(plain) == ("unknown", "unknown")
+
+
+def test_git_state_is_unknown_when_git_cannot_run(script, repo, monkeypatch):
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(script.subprocess, "run", missing)
+    assert script.git_state(repo) == ("unknown", "unknown")
+
+
+def test_utc_now_is_iso_utc_to_the_second(script):
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", script.utc_now())
+
+
+def test_each_fetch_is_recorded_and_a_second_one_does_not_replace_the_first(script, tmp_path,
+                                                                            repo, monkeypatch):
+    times = iter(["2026-11-13T10:00:00Z", "2026-11-13T10:05:00Z", "2026-11-14T09:00:00Z",
+                  "2026-11-14T09:01:00Z"])
+    monkeypatch.setattr(script, "utc_now", lambda: next(times))
+    first_commit = head(repo)
+    lines = []
+    write_calendar(tmp_path, CALENDAR_ROWS)
+    arguments = ["--series", "KXCPI", "--start", "2026-09-01", "--end", "2026-10-31",
+                 "--db", str(tmp_path / "k.sqlite"),
+                 "--calendar", str(tmp_path / "release_calendar.csv")]
+    assert script.main(arguments, client=make_client(make_api(canned_world())),
+                       out=lines.append, repo=repo) == 0
+    assert f"fetch recorded: commit {first_commit}, uncommitted changes: false" in lines
+    (repo / "a.txt").write_text("changed\n")
+    git(repo, "commit", "-q", "-am", "second")
+    (repo / "b.txt").write_text("dirty\n")
+    assert script.main(arguments, client=make_client(make_api(canned_world())),
+                       out=lines.append, repo=repo) == 0
+    with closing(sqlite3.connect(tmp_path / "k.sqlite")) as conn:
+        meta = dict(conn.execute("SELECT key, value FROM meta WHERE key LIKE 'fetch_%' "
+                                 "AND key != 'fetch_runs' OR key LIKE 'git_%'"))
+        runs = panel.fetch_runs(conn)
+    assert meta == {"fetch_started_utc": "2026-11-13T10:00:00Z",
+                    "fetch_finished_utc": "2026-11-13T10:05:00Z",
+                    "git_commit": first_commit, "git_dirty": "false"}
+    assert runs == [
+        {"fetch_started_utc": "2026-11-13T10:00:00Z", "fetch_finished_utc": "2026-11-13T10:05:00Z",
+         "git_commit": first_commit, "git_dirty": "false"},
+        {"fetch_started_utc": "2026-11-14T09:00:00Z", "fetch_finished_utc": "2026-11-14T09:01:00Z",
+         "git_commit": head(repo), "git_dirty": "true"}]
+    assert first_commit != head(repo)
+
+
+def test_a_fetch_that_fails_is_recorded_with_the_time_it_stopped(script, tmp_path, repo):
+    failing = make_api(canned_world(), fail_after=6)
+    status, _ = run_cli(script, tmp_path, transport=failing, max_retries=0)
+    assert status == 1
+    with closing(sqlite3.connect(tmp_path / "k.sqlite")) as conn:
+        runs = panel.fetch_runs(conn)
+    assert len(runs) == 1 and runs[0]["fetch_finished_utc"] is not None
+
+
+def test_a_dry_run_and_a_draft_record_no_fetch(script, tmp_path):
+    run_cli(script, tmp_path)
+    status, _ = run_cli(script, tmp_path, "--dry-run")
+    assert status == 0
+    with closing(sqlite3.connect(tmp_path / "k.sqlite")) as conn:
+        assert len(panel.fetch_runs(conn)) == 1

@@ -10,7 +10,10 @@ Run from the repository root with ``PYTHONPATH=src``. Three modes:
 * the default fetches the series from the live and the historical endpoints into ``--db``, for the
   events of ``--calendar`` whose release is in ``--start`` to ``--end`` (both days included), and
   applies the protocol filters. A market is stored as soon as it is read, so running the same
-  command again after a failure or an interrupt continues where it stopped.
+  command again after a failure or an interrupt continues where it stopped. Each run records in
+  the ``meta`` table when it started and finished and the commit of the repository it ran from,
+  with whether the repository had uncommitted changes (``panel.begin_fetch_run``); a later run is
+  added to the record and does not replace the first.
 * ``--dry-run`` lists what a run would fetch, from the market listing and the calendar, and
   requests no trade and writes nothing.
 
@@ -21,7 +24,9 @@ live service. It sends no credentials.
 from __future__ import annotations
 
 import argparse
+import datetime
 import sqlite3
+import subprocess
 from collections.abc import Callable, Sequence
 from contextlib import closing
 from pathlib import Path
@@ -30,6 +35,9 @@ import pandas as pd
 
 from kalshi_mm import ingest, panel
 from kalshi_mm.kalshi_api import KalshiApiError, KalshiClient
+
+REPO = Path(__file__).resolve().parents[1]
+UNKNOWN = "unknown"
 
 NOTICE = """\
 Kalshi's Developer Agreement, v1.1:
@@ -40,6 +48,28 @@ trading on Kalshi, and sharing such data with third parties without Kalshi's pri
 authorization. This script sends no credentials, and the agreement does not say whether it covers
 the public endpoints. Read it before you run this. The data go to the database you name; keep them
 out of version control (data/ is ignored by git)."""
+
+
+def git_state(repo: Path) -> tuple[str, str]:
+    """``(commit, dirty)`` of the repository at ``repo``: the output of ``git rev-parse HEAD``, and
+    ``"true"`` if ``git status --porcelain`` lists anything, else ``"false"``; ``("unknown",
+    "unknown")`` if git is missing or ``repo`` is not a repository."""
+    try:
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                              capture_output=True, text=True)
+        status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
+                                capture_output=True, text=True)
+    except OSError:
+        return UNKNOWN, UNKNOWN
+    if head.returncode != 0 or status.returncode != 0 or not head.stdout.strip():
+        return UNKNOWN, UNKNOWN
+    return head.stdout.strip(), "true" if status.stdout.strip() else "false"
+
+
+def utc_now() -> str:
+    """The current time as ISO 8601 UTC with ``Z``, to the second."""
+    return datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds").replace(
+        "+00:00", "Z")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -120,28 +150,18 @@ def _dry_run(args: argparse.Namespace, window: ingest.Window, calendar: pd.DataF
 
 
 def _fetch(args: argparse.Namespace, window: ingest.Window, calendar: pd.DataFrame,
-           client: KalshiClient, out: Callable[[str], None]) -> int:
+           client: KalshiClient, out: Callable[[str], None], repo: Path) -> int:
     args.db.parent.mkdir(parents=True, exist_ok=True)
     total = ingest.BuildReport(min_trades=args.min_trades)
     with closing(sqlite3.connect(args.db)) as conn:
-        for series in args.series:
-            summary = ingest.ingest_series(conn, client, series, calendar, window,
-                                           min_trades=args.min_trades, log=out)
-            total += summary.report
-            out(f"{series}: {summary.listed} market records: {summary.out_of_scope} out of "
-                f"scope, {summary.already_loaded} already in the database, {summary.fetched} "
-                f"fetched, {summary.written} stored")
-            for line in summary.report.summary():
-                out(f"  {line}")
-            if summary.written + summary.already_loaded == 0:
-                out(f"{series}: no market was stored; the series is reported as empty "
-                    "(docs/protocol.md) and is not replaced")
-            if summary.cutoff_moved:
-                out(f"warning: the historical cutoff moved during the run (trades created "
-                    f"before {ingest.utc_text(summary.cutoff_before.trades_created_ts)} became "
-                    f"{ingest.utc_text(summary.cutoff_after.trades_created_ts)}): trades created "
-                    "between the two may be missing for markets read after it moved; delete "
-                    "those markets, or the database, and run again")
+        panel.create_schema(conn)
+        commit, dirty = git_state(repo)
+        panel.begin_fetch_run(conn, started_utc=utc_now(), git_commit=commit, git_dirty=dirty)
+        out(f"fetch recorded: commit {commit}, uncommitted changes: {dirty}")
+        try:
+            total = _fetch_series(args, window, calendar, client, out, conn, total)
+        finally:
+            panel.end_fetch_run(conn, finished_utc=utc_now())
     out(f"all series ({len(args.series)}), read in this run:")
     for line in total.summary():
         out(f"  {line}")
@@ -149,9 +169,35 @@ def _fetch(args: argparse.Namespace, window: ingest.Window, calendar: pd.DataFra
     return 0
 
 
+def _fetch_series(args: argparse.Namespace, window: ingest.Window, calendar: pd.DataFrame,
+                  client: KalshiClient, out: Callable[[str], None], conn: sqlite3.Connection,
+                  total: ingest.BuildReport) -> ingest.BuildReport:
+    """Fetch each series in turn and print its counts; returns ``total`` plus their reports."""
+    for series in args.series:
+        summary = ingest.ingest_series(conn, client, series, calendar, window,
+                                       min_trades=args.min_trades, log=out)
+        total += summary.report
+        out(f"{series}: {summary.listed} market records: {summary.out_of_scope} out of "
+            f"scope, {summary.already_loaded} already in the database, {summary.fetched} "
+            f"fetched, {summary.written} stored")
+        for line in summary.report.summary():
+            out(f"  {line}")
+        if summary.written + summary.already_loaded == 0:
+            out(f"{series}: no market was stored; the series is reported as empty "
+                "(docs/protocol.md) and is not replaced")
+        if summary.cutoff_moved:
+            out(f"warning: the historical cutoff moved during the run (trades created "
+                f"before {ingest.utc_text(summary.cutoff_before.trades_created_ts)} became "
+                f"{ingest.utc_text(summary.cutoff_after.trades_created_ts)}): trades created "
+                "between the two may be missing for markets read after it moved; delete "
+                "those markets, or the database, and run again")
+    return total
+
+
 def main(argv: Sequence[str] | None = None, *, client: KalshiClient | None = None,
-         out: Callable[[str], None] = print) -> int:
-    """Run the command line; ``client`` and ``out`` are replaced in the tests. Returns the exit
+         out: Callable[[str], None] = print, repo: Path = REPO) -> int:
+    """Run the command line; ``client``, ``out`` and ``repo`` (whose git state a fetch records)
+    are replaced in the tests. Returns the exit
     status: 0 done, 1 the API failed (what was stored is kept), 2 the arguments, the calendar or
     the database (written by an earlier version of the schema) are not usable."""
     parser = build_parser()
@@ -176,7 +222,7 @@ def main(argv: Sequence[str] | None = None, *, client: KalshiClient | None = Non
             return 2
         if args.dry_run:
             return _dry_run(args, window, calendar, client, out)
-        return _fetch(args, window, calendar, client, out)
+        return _fetch(args, window, calendar, client, out, repo)
     except (ingest.CalendarChangedError, panel.OldSchemaError) as error:
         out(f"stopped: {error}")
         return 2

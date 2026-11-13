@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from kalshi_mm import run_real
-from kalshi_mm.panel import create_schema, write_dataset
+from kalshi_mm.panel import begin_fetch_run, create_schema, end_fetch_run, write_dataset
 from kalshi_mm.run_real import data_checks, describe_checks, describe_dataset, off_tick, tag_problem
 from kalshi_mm.world import WorldParams, generate_world
 
@@ -206,3 +206,82 @@ def test_run_real_refuses_a_database_of_the_older_schema(tmp_path, capsys):
     assert run_real.main(["--db", str(path), "--out", str(tmp_path / "out")]) == 2
     assert "earlier version of the schema" in capsys.readouterr().out
     assert not (tmp_path / "out").exists()
+
+
+# --------------------------------------------------------------- the record of the fetches
+def _head(repo):
+    return subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True,
+                          text=True, check=True).stdout.strip()
+
+
+def _run(commit, dirty="false", started="2026-11-13T10:00:00Z"):
+    return {"fetch_started_utc": started, "fetch_finished_utc": "2026-11-13T11:00:00Z",
+            "git_commit": commit, "git_dirty": dirty}
+
+
+def test_provenance_problems_in_a_temporary_repository(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.py").write_text("x = 1\n")
+    (repo / "README.md").write_text("readme\n")
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "first")
+    tagged = _head(repo)
+    assert any("cannot be compared" in p for p in run_real.provenance_problems([_run(tagged)],
+                                                                               repo))
+    _git(repo, "tag", "real-run")
+    assert run_real.provenance_problems([_run(tagged)], repo) == []
+    (repo / "README.md").write_text("changed\n")  # not a guarded file
+    _git(repo, "commit", "-q", "-am", "readme")
+    readme = _head(repo)
+    assert run_real.provenance_problems([_run(tagged), _run(readme)], repo) == []
+    (repo / "src" / "a.py").write_text("x = 2\n")
+    _git(repo, "commit", "-q", "-am", "code")
+    code = _head(repo)
+    problems = run_real.provenance_problems([_run(tagged), _run(code), _run(code)], repo)
+    assert problems == [f"a fetch ran from commit {code}, whose guarded files differ from the "
+                        "tag real-run"]  # one line per commit
+    dirty = run_real.provenance_problems(
+        [_run(tagged), _run(tagged, "true", "2026-11-14T09:00:00Z")], repo)
+    assert dirty == ["1 of 2 fetches ran from a repository with uncommitted changes "
+                     "(git_dirty true), the first started 2026-11-14T09:00:00Z"]
+    assert run_real.provenance_problems([_run(tagged, "unknown")], repo) == []
+    unknown = run_real.provenance_problems([_run("unknown", "unknown")], repo)
+    assert unknown == ["a fetch has no recorded commit (git was unavailable)"]
+    missing = run_real.provenance_problems([_run("0" * 40)], repo)
+    assert len(missing) == 1 and "cannot be compared with the tag real-run" in missing[0]
+    assert "no record of its fetch" in run_real.provenance_problems([], repo)[0]
+
+
+def test_run_real_prints_the_fetches_and_writes_their_departures(tmp_path, capsys, monkeypatch):
+    _real_like_database(tmp_path / "kalshi.sqlite")
+    with closing(sqlite3.connect(tmp_path / "kalshi.sqlite")) as conn:
+        begin_fetch_run(conn, started_utc="2026-11-13T10:00:00Z", git_commit="abc123",
+                        git_dirty="true")
+        end_fetch_run(conn, finished_utc="2026-11-13T11:00:00Z")
+    monkeypatch.setattr(run_real, "tag_problem", lambda: None)
+    monkeypatch.setattr(run_real, "provenance_problems",
+                        lambda runs: [f"seen {len(runs)} run, dirty {runs[0]['git_dirty']}"])
+    out = tmp_path / "real"
+    assert run_real.main(["--db", str(tmp_path / "kalshi.sqlite"), "--out", str(out),
+                          *[f"--set={a}" for a in SMALL]]) == 0
+    printed = capsys.readouterr().out
+    assert ("started 2026-11-13T10:00:00Z, finished 2026-11-13T11:00:00Z, commit abc123, "
+            "uncommitted changes true") in printed
+    assert "departure: seen 1 run, dirty true" in printed
+    assert "- seen 1 run, dirty true" in (out / "DEVIATIONS.md").read_text()
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["data_checks"]["fetch_runs"][0]["git_commit"] == "abc123"
+    assert "seen 1 run, dirty true" in summary["deviations"]
+    manifest = (out / "run_real.manifest.txt").read_text()
+    assert "fetch 1: fetch_started_utc 2026-11-13T10:00:00Z" in manifest
+
+
+def test_a_database_without_a_record_of_its_fetch_is_a_departure(tmp_path, monkeypatch):
+    _real_like_database(tmp_path / "kalshi.sqlite")
+    monkeypatch.setattr(run_real, "tag_problem", lambda: None)
+    out = tmp_path / "real"
+    assert run_real.main(["--db", str(tmp_path / "kalshi.sqlite"), "--out", str(out),
+                          *[f"--set={a}" for a in SMALL]]) == 0
+    assert "no record of its fetch" in (out / "DEVIATIONS.md").read_text()

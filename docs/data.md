@@ -94,6 +94,15 @@ trades  (market -> markets, ts REAL, seq INTEGER, price REAL, size REAL, side -1
 meta    (key PRIMARY KEY, value)   -- key "source": "synthetic" or "kalshi-public-api"
 ```
 
+Each fetch records itself in `meta`: `fetch_started_utc` and `fetch_finished_utc` (ISO 8601, UTC),
+`git_commit` (`git rev-parse HEAD` of the repository the script ran from) and `git_dirty` (`true` if
+`git status --porcelain` lists anything, else `false`; both `unknown` when git cannot tell). These
+four keys hold the first fetch and are never replaced; `fetch_runs` holds every fetch, the first
+included, as a JSON list of the same four fields. A fetch that stops records the time it stopped.
+`scripts/run_real.py` prints the list and writes a line to `DEVIATIONS.md` when the database has no
+record, when a fetch had uncommitted changes, or when the commit of a fetch is unknown, unknown to
+the repository or differs from the tag `real-run` in the files the tag check guards.
+
 Column types are checked (`typeof`), prices lie in (0, 1), sizes are positive, and one database holds
 one source. Each market that passes the filters is written in its own transaction, replacing its
 earlier trades. A database written before a column was added to the schema is refused with a message
