@@ -15,7 +15,8 @@ Estimands, each ``D = mean(near) - mean(quiet)`` with quiet = (360, inf) minutes
     (a) raw D, near (0, 30]          the quantity of protocol P1
     (b) scaled D, near (0, 30]       adverse selection / (4 m (1 - m)), cents at a price of 50 cents
     (c) raw D, near (5, 30]          no trade whose horizon is cut by the release
-    (d) scaled D, near (5, 30]       the cleaner read; added to the three that were asked for
+    (d) scaled D, near (5, 30]       the price level divided out and no cut horizon; added to the
+                                     three that were asked for
 
 **Population values** come from 3,000 events with seed 0 in each world: the bucket means of the
 tape adverse selection, its scaled version, the oracle adverse selection and the analytic price
@@ -579,13 +580,21 @@ def _effect_sentence(res: RecoveryResults) -> str:
     if spec["sign"] != "zero" or flat["sign"] != "zero":
         text += (", so D is a per-contract cost measured on the tape, not an estimate of the "
                  "informed share")
-    clean = _effect(res, "flat_null", "scaled_5_30")
-    if clean["sign"] == "zero":
-        text += (f"; scaled D near (5, 30] is the cleaner read: in flat_null it is "
-                 f"{_signed(clean['D_cents'])} cents, with an interval that contains zero")
+    flat_clean = _effect(res, "flat_null", "scaled_5_30")
+    spec_clean = _effect(res, "spec_null", "scaled_5_30")
+    flat_text = f"flat_null {_signed(flat_clean['D_cents'])} cents"
+    spec_text = (f"spec_null {_signed(spec_clean['D_cents'])} cents, interval "
+                 f"{_signed(spec_clean['lo_cents'])} to {_signed(spec_clean['hi_cents'])}")
+    if flat_clean["sign"] == "zero" and spec_clean["sign"] != "zero":
+        text += (f"; scaled D near (5, 30] removes the price-level artefact ({flat_text}, with an "
+                 f"interval that contains zero) but not the surge ({spec_text})")
+    elif flat_clean["sign"] == "zero":
+        text += (f"; scaled D near (5, 30] is zero in both worlds without an informed-share "
+                 f"profile ({flat_text}, with an interval that contains zero; {spec_text})")
     else:
-        text += (f"; scaled D near (5, 30] is still {clean['sign']} in flat_null "
-                 f"({_signed(clean['D_cents'])} cents)")
+        text += (f"; scaled D near (5, 30] is still {flat_clean['sign']} in flat_null "
+                 f"({_signed(flat_clean['D_cents'])} cents) and {spec_clean['sign']} in spec_null "
+                 f"({_signed(spec_clean['D_cents'])} cents)")
     return text
 
 
@@ -773,8 +782,10 @@ def _table_sample(res: RecoveryResults) -> list[str]:
     return [
         "### M8. Number of events for 80% power in the planted world (synthetic data)",
         "",
-        "Reading: smallest size tried with a rejection rate above 80% in the planted world, each "
-        f"rate from {d['reps']} replications (Monte Carlo standard error up to "
+        "Reading: smallest size tried with a rejection rate above 80% in the planted world "
+        "(rejection: one-sided cluster-bootstrap p below 0.05, with no Holm adjustment, so this is "
+        f"not the power of the three-test family of the protocol), each rate from {d['reps']} "
+        f"replications (Monte Carlo standard error up to "
         f"{100.0 * np.sqrt(0.25 / d['reps']):.1f} points); it applies to an effect like the "
         f"planted one.{_cut_note(res)}",
         "",

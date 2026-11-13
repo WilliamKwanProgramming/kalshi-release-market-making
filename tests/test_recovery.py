@@ -701,9 +701,10 @@ def test_tables_are_eight_blocks_the_readme_parser_reads(study, tmp_path):
         assert parts[3].startswith("Does not show: ") and "\n" not in parts[3]
 
 
-def with_effects(res, spec, flat, clean):
+def with_effects(res, spec, flat, clean, surge_clean=None):
     """``res`` with the raw D of spec_null and flat_null and the scaled (5, 30] D of flat_null
-    replaced by ``(D in cents, sign)`` pairs."""
+    replaced by ``(D in cents, sign)`` pairs and, if given, the scaled (5, 30] D of spec_null by
+    ``(D in cents, sign, lower, upper)``."""
     effects = res.effects.copy()
     new = {("spec_null", "raw_0_30"): spec, ("flat_null", "raw_0_30"): flat,
            ("flat_null", "scaled_5_30"): clean}
@@ -711,6 +712,11 @@ def with_effects(res, spec, flat, clean):
         row = (effects["world"] == world) & (effects["estimand"] == key)
         effects.loc[row, "D_cents"] = d
         effects.loc[row, "sign"] = sign
+    if surge_clean is not None:
+        row = (effects["world"] == "spec_null") & (effects["estimand"] == "scaled_5_30")
+        for column, value in zip(("D_cents", "sign", "lo_cents", "hi_cents"), surge_clean,
+                                 strict=True):
+            effects.loc[row, column] = value
     return res._replace(effects=effects)
 
 
@@ -721,12 +727,19 @@ def reading_of(text, table_id):
 
 def test_the_statements_about_the_surge_and_the_level_follow_the_numbers(study):
     both = rc.tables_markdown(with_effects(study, (0.41, "positive"), (-0.16, "negative"),
-                                           (0.03, "zero")))
+                                           (0.03, "zero"), (1.61, "positive", 1.56, 1.66)))
     reading = reading_of(both, "M3")
     assert ("raw D is positive with the surge alone (spec_null, +0.41 cents) and negative with "
             "neither (flat_null, -0.16 cents), so D is a per-contract cost measured on the tape, "
-            "not an estimate of the informed share; scaled D near (5, 30] is the cleaner read: "
-            "in flat_null it is +0.03 cents, with an interval that contains zero") in reading
+            "not an estimate of the informed share; scaled D near (5, 30] removes the "
+            "price-level artefact (flat_null +0.03 cents, with an interval that contains zero) "
+            "but not the surge (spec_null +1.61 cents, interval +1.56 to +1.66)") in reading
+    assert "cleaner read" not in reading
+    nothing = rc.tables_markdown(with_effects(study, (0.41, "positive"), (-0.16, "negative"),
+                                              (0.03, "zero"), (0.02, "zero", -0.05, 0.09)))
+    assert ("scaled D near (5, 30] is zero in both worlds without an informed-share profile "
+            "(flat_null +0.03 cents, with an interval that contains zero; spec_null +0.02 "
+            "cents, interval -0.05 to +0.09)") in reading_of(nothing, "M3")
     mixed = ("per-contract cost measured on the tape, not an estimate of the informed share")
     one = reading_of(rc.tables_markdown(with_effects(study, (0.41, "positive"), (-0.02, "zero"),
                                                      (0.03, "zero"))), "M3")
@@ -740,6 +753,16 @@ def test_the_statements_about_the_surge_and_the_level_follow_the_numbers(study):
     assert "per-contract cost" not in reading and "not an estimate" not in reading
     assert "scaled D near (5, 30] is still positive in flat_null (+0.12 cents)" in reading
     assert "cleaner read" not in reading
+    both_positive = with_effects(study, (0.01, "zero"), (-0.01, "zero"), (0.12, "positive"),
+                                 (0.30, "positive", 0.20, 0.40))
+    assert ("is still positive in flat_null (+0.12 cents) and positive in spec_null (+0.30 cents)"
+            in reading_of(rc.tables_markdown(both_positive), "M3"))
+
+
+def test_the_power_table_says_what_a_rejection_is(study):
+    reading = reading_of(rc.tables_markdown(study), "M8")
+    assert ("(rejection: one-sided cluster-bootstrap p below 0.05, with no Holm adjustment, so "
+            "this is not the power of the three-test family of the protocol)") in reading
 
 
 def test_saturation_surge_share_and_cut_note_come_from_the_results(study):

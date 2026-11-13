@@ -572,8 +572,18 @@ mutant("recovery: effect sentence and", REC, "experiments/recovery.py",
        'if spec["sign"] != "zero" or flat["sign"] != "zero":',
        'if spec["sign"] != "zero" and flat["sign"] != "zero":')
 mutant("recovery: effect sentence raw clean", REC, "experiments/recovery.py",
-       'clean = _effect(res, "flat_null", "scaled_5_30")',
-       'clean = _effect(res, "flat_null", "raw_5_30")')
+       'flat_clean = _effect(res, "flat_null", "scaled_5_30")',
+       'flat_clean = _effect(res, "flat_null", "raw_5_30")')
+mutant("recovery: effect sentence surge clean is raw", REC, "experiments/recovery.py",
+       'spec_clean = _effect(res, "spec_null", "scaled_5_30")',
+       'spec_clean = _effect(res, "spec_null", "raw_5_30")')
+mutant("recovery: effect sentence surge clean from the wrong world", REC,
+       "experiments/recovery.py",
+       'spec_clean = _effect(res, "spec_null", "scaled_5_30")',
+       'spec_clean = _effect(res, "flat_null", "scaled_5_30")')
+mutant("recovery: effect sentence says the surge is removed", REC, "experiments/recovery.py",
+       'if flat_clean["sign"] == "zero" and spec_clean["sign"] != "zero":',
+       'if flat_clean["sign"] == "zero" and spec_clean["sign"] == "zero":')
 mutant("recovery: coverage reference smallest", REC, "experiments/recovery.py",
        'ref = 200 if 200 in d["sizes"] else max(d["sizes"])',
        'ref = 200 if 200 in d["sizes"] else min(d["sizes"])')
