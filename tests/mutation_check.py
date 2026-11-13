@@ -200,9 +200,14 @@ mutant("protocol: a market with no proxy in the quoting window is kept", PROTO, 
 mutant("protocol: the recalibration price is taken minutes, not hours, ahead", PROTO,
        "protocol.py", "query = float(release_ts[event]) - 3600.0 * settings.recal_hours",
        "query = float(release_ts[event]) - 60.0 * settings.recal_hours")
-mutant("protocol: P3 runs with exactly the minimum number of releases", PROTO, "protocol.py",
+# Changing "<=" to "<" in the first check below is an equivalent mutant, so it is not listed: with
+# exactly the minimum number of releases no release has enough earlier ones, and the guard "if
+# walk.empty" returns the same result as the first check does.
+mutant("protocol: P3 needs one release more than the minimum to run", PROTO, "protocol.py",
        'if usable["release_ts"].nunique() <= settings.recal_min_releases:',
-       'if usable["release_ts"].nunique() < settings.recal_min_releases:')
+       'if usable["release_ts"].nunique() <= settings.recal_min_releases + 1:')
+mutant("protocol: P3 with no release that has enough earlier ones is an error", PROTO,
+       "protocol.py", "if walk.empty:", "if False:")
 mutant("protocol: the bootstrap seed is ignored", PROTO, "protocol.py",
        "np.random.default_rng(settings.seed)", "np.random.default_rng(0)")
 mutant("protocol: supported at an adjusted p equal to alpha", PROTO, "protocol.py",
