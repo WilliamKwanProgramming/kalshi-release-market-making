@@ -10,12 +10,14 @@ from kalshi_mm.logit import logit, round_to_tick
 from kalshi_mm.markout import BUCKET_LABELS, bucket_index, trade_markouts
 from kalshi_mm.quoting import (
     POLICIES,
+    PREMIUM_POLICIES,
     Premiums,
     QuoteParams,
     _bucket_of,
     decision_minutes,
     estimate_premiums,
     matched_premium,
+    premium_per_unit,
     quote_prices,
     realized_logit_vol,
 )
@@ -407,6 +409,55 @@ def test_quote_prices_equals_the_formulas_on_random_inputs(tick):
         assert got is not None
         for a, b in zip(got, want, strict=True):
             assert (math.isnan(a) and math.isnan(b)) or a == pytest.approx(b, abs=1e-9)
+
+
+def test_the_premium_policies_are_the_three_that_carry_a_premium():
+    assert PREMIUM_POLICIES == ("pooled_premium", "flat_matched", "release_aware")
+    assert set(PREMIUM_POLICIES) < set(POLICIES)
+
+
+def test_premium_per_unit_is_the_premium_that_each_policy_quotes():
+    # PREMIUMS: pooled 0.05, matched 0.04 and (0.10, 0.08, 0.06, 0.04, 0.03, 0.02, 0.01) by bucket
+    for tau in (0.5, 3.0, 100.0, 500.0):
+        assert premium_per_unit("always_on", tau, PREMIUMS, HAND) == 0.0
+        assert premium_per_unit("pull_only", tau, PREMIUMS, HAND) == 0.0
+        assert premium_per_unit("pooled_premium", tau, PREMIUMS, HAND) == 0.05
+        assert premium_per_unit("flat_matched", tau, PREMIUMS, HAND) == 0.04
+    for tau, want in ((0.5, 0.10), (5.0, 0.10), (5.0001, 0.08), (15.0, 0.08), (100.0, 0.03),
+                      (360.0, 0.02), (500.0, 0.01)):
+        assert premium_per_unit("release_aware", tau, PREMIUMS, HAND) == want
+    triple = QuoteParams(gamma=0.002, k=40.0, flat_scale=3.0)  # only flat_matched reads the scale
+    assert premium_per_unit("flat_matched", 100.0, PREMIUMS, triple) == pytest.approx(0.12)
+    assert premium_per_unit("pooled_premium", 100.0, PREMIUMS, triple) == 0.05
+    assert premium_per_unit("release_aware", 100.0, PREMIUMS, triple) == 0.03
+
+
+def test_premium_per_unit_checks_its_arguments_like_quote_prices():
+    with pytest.raises(ValueError, match="policy"):
+        premium_per_unit("on_always", 3.0, PREMIUMS, HAND)
+    for tau in (0.0, -3.0, NAN):
+        with pytest.raises(ValueError, match="positive"):
+            premium_per_unit("release_aware", tau, PREMIUMS, HAND)
+    without = Premiums(0.05, (0.10, 0.08, 0.06, 0.04, 0.03, 0.02, 0.01), 40)
+    with pytest.raises(ValueError, match="matched"):
+        premium_per_unit("flat_matched", 3.0, without, HAND)
+    assert premium_per_unit("pooled_premium", 3.0, without, HAND) == 0.05
+    assert premium_per_unit("release_aware", 3.0, without, HAND) == 0.10
+
+
+def test_the_half_spread_carries_four_mm_times_the_premium_per_unit():
+    """The quote of a policy is wider than the quote of the same policy at a premium of zero by
+    ``4 m (1 - m)`` times :func:`premium_per_unit` on each side, up to the tick."""
+    tick = 1e-4
+    params = QuoteParams(gamma=0.002, k=40.0, tick=tick, flat_scale=1.7)
+    m = 0.3
+    for policy in PREMIUM_POLICIES:
+        for tau in (3.0, 12.0, 100.0, 500.0):
+            bid, ask = quote_prices(policy, m, 0.0, tau, 0.1, PREMIUMS, params)
+            bid0, ask0 = quote_prices(policy, m, 0.0, tau, 0.1, ZERO, params)
+            want = 4.0 * m * (1.0 - m) * premium_per_unit(policy, tau, PREMIUMS, params)
+            assert (bid0 - bid) == pytest.approx(want, abs=2 * tick)
+            assert (ask - ask0) == pytest.approx(want, abs=2 * tick)
 
 
 def test_the_scalar_rounding_agrees_with_the_foundation_rounding_on_awkward_values():

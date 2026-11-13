@@ -26,10 +26,13 @@ policy                variance ``v``                                  premium ``
 ``4 m (1 - m)`` (:func:`estimate_premiums`); ``AS_bucket`` is the same mean over the trades whose
 minutes to the release are in the bucket of the refresh. ``AS_flat`` is the average of
 ``AS_bucket`` over the refreshes of the quoting window (:func:`matched_premium`), so
-``flat_matched`` and ``release_aware`` quote the same premium on average over the window and differ
-only in when they quote it. ``pooled_premium`` is a flat premium of another size: ``AS`` weighs
-every trade equally, and the trades are not spread evenly over the window. ``m`` is the mid proxy
-at the refresh. Nothing here reads a column whose name starts with ``latent_``.
+``flat_matched`` and ``release_aware`` quote the same premium per unit of ``4 m (1 - m)`` averaged
+over the clock of the window. That is not the premium they quote where they are filled: the trades,
+and so the fills, are not spread evenly over the window, and ``release_aware`` quotes more premium
+where the trades are (:func:`premium_per_unit` gives the premium of a refresh; the backtest
+reports the premium at the fills). ``pooled_premium`` is a flat premium of another size: ``AS``
+weighs every trade equally. ``m`` is the mid proxy at the refresh. Nothing here reads a column
+whose name starts with ``latent_``.
 """
 
 from __future__ import annotations
@@ -50,12 +53,14 @@ from kalshi_mm.tape import mid_proxy_asof
 
 __all__ = [
     "POLICIES",
+    "PREMIUM_POLICIES",
     "Policy",
     "Premiums",
     "QuoteParams",
     "decision_minutes",
     "estimate_premiums",
     "matched_premium",
+    "premium_per_unit",
     "quote_prices",
     "realized_logit_vol",
 ]
@@ -64,6 +69,8 @@ Policy = Literal["always_on", "pull_only", "pooled_premium", "flat_matched", "re
 POLICIES: tuple[Policy, ...] = (
     "always_on", "pull_only", "pooled_premium", "flat_matched", "release_aware"
 )
+# the policies with a premium; they also add the terminal variance m (1 - m) to the variance
+PREMIUM_POLICIES: tuple[Policy, ...] = ("pooled_premium", "flat_matched", "release_aware")
 
 MIN_VARIANCE_SCALE = 0.05  # trades with m (1 - m) below this do not enter the premium (model.md 6)
 MIN_VOL_POINTS = 6  # valid grid points needed for a realized volatility
@@ -87,8 +94,10 @@ class QuoteParams:
     ``maker_fee_coeff`` is the coefficient of the maker fee and ``fill_rule`` is ``"through"``
     (a print strictly beyond the quote fills it) or ``"touch"`` (a print at the quote fills it too).
     ``flat_scale`` multiplies the premium of ``flat_matched``: 1 gives the flat premium with the
-    same average as the bucket premiums, which is the comparison of the protocol, and other values
-    are only for the level sweep of table B9.
+    same average over the clock of the window as the bucket premiums, which is the comparison of
+    the protocol; other values are for the level sweep of table B9, for the comparison at an equal
+    premium at the fills of table B10 and for the sensitivity run of P2 that scales the premium
+    to the premium at the fills.
     """
 
     gamma: float = 0.002
@@ -184,10 +193,11 @@ def matched_premium(by_bucket: Sequence[float], minutes: ArrayLike) -> float:
     ``minutes`` the (positive) minutes to the release of each decision of the quoting window, for
     example :func:`decision_minutes`. This is the premium that ``release_aware`` quotes, averaged
     over the clock time of the window with every refresh counted once (docs/model.md section 6). A
-    flat premium of this size has the same average over the window as the bucket premiums (per
-    unit of ``4 m (1 - m)``, the quoted premium in USD also depends on the price), so quoting it
-    (``flat_matched``) isolates the effect of when a premium is applied from the effect of how
-    large it is on average.
+    flat premium of this size has the same average over the clock of the window as the bucket
+    premiums (per unit of ``4 m (1 - m)``; the quoted premium in USD also depends on the price), so
+    quoting it (``flat_matched``) removes the difference in size over the clock between the bucket
+    premiums and the pooled premium. It does not make the two premiums equal where the fills
+    happen: the trades are not spread over the window like the clock.
     """
     taus = np.asarray(minutes, dtype=np.float64)
     _require(taus.ndim == 1 and taus.size > 0 and bool(np.all(taus > 0.0)),
@@ -301,6 +311,35 @@ def _snap(ticks: float) -> float:
     return float(whole) if abs(ticks - whole) <= max(1e-9, 1e-14 * abs(ticks)) else ticks
 
 
+def premium_per_unit(
+    policy: Policy, tau_minutes: float, premiums: Premiums, params: QuoteParams
+) -> float:
+    """Premium per unit of ``4 m (1 - m)`` that ``policy`` quotes ``tau_minutes`` before release.
+
+    USD per contract (docs/model.md section 6): 0 for ``always_on`` and ``pull_only``,
+    ``premiums.pooled`` for ``pooled_premium``, ``premiums.matched * params.flat_scale`` for
+    ``flat_matched`` (``ValueError`` when ``premiums.matched`` is None) and the premium of the
+    bucket that holds ``tau_minutes`` for ``release_aware``. :func:`quote_prices` adds ``4 m (1 -
+    m)`` times this number to each half-spread, and :func:`kalshi_mm.backtest.backtest_grid` weights
+    it by the contracts of each fill to report the premium that the fills of a market carried.
+    """
+    if policy not in POLICIES:
+        raise ValueError(f"policy must be one of {POLICIES}, got {policy!r}")
+    if not tau_minutes > 0.0:
+        raise ValueError("tau_minutes must be positive")
+    if policy == "pooled_premium":
+        return premiums.pooled
+    if policy == "flat_matched":
+        if premiums.matched is None:
+            raise ValueError(
+                "flat_matched needs premiums.matched: estimate_premiums(..., minutes=...)"
+            )
+        return premiums.matched * params.flat_scale
+    if policy == "release_aware":
+        return premiums.by_bucket[_bucket_of(tau_minutes)]
+    return 0.0
+
+
 def quote_prices(
     policy: Policy,
     mid: float,
@@ -320,14 +359,13 @@ def quote_prices(
     inside the pull window, like the bucket "(0,5]"). A side that the inventory has closed
     (``inventory >= max_position`` for the bid, ``<= -max_position`` for the ask) is NaN.
 
-    With ``mm = m (1 - m)``, ``v = (sigma mm)^2 tau_h`` plus ``mm`` for the premium policies,
-    ``r = m - q gamma v``, ``delta = gamma v + (2 / gamma) ln(1 + gamma / k)`` and the premium
-    ``h = 4 mm * AS`` (0 for the policies without one; ``AS`` is ``premiums.pooled``,
-    ``premiums.matched * params.flat_scale`` or the premium of the bucket of ``tau_minutes``, for
-    ``pooled_premium``, ``flat_matched`` and ``release_aware``) the bid is ``r - delta / 2 - h``
-    rounded down and the ask ``r + delta / 2 + h`` rounded up to the tick, then clipped to
-    ``[tick, 1 - tick]``; if that leaves them less than a tick apart the ask moves up a tick (the
-    bid moves down at the upper edge).
+    With ``mm = m (1 - m)``, ``v = (sigma mm)^2 tau_h`` plus ``mm`` for the premium policies
+    (:data:`PREMIUM_POLICIES`), ``r = m - q gamma v``, ``delta = gamma v + (2 / gamma) ln(1 +
+    gamma / k)`` and the premium ``h = 4 mm * AS`` (``AS`` is :func:`premium_per_unit`, 0 for the
+    policies without a premium) the bid is ``r - delta / 2 - h`` rounded down and the ask
+    ``r + delta / 2 + h`` rounded up to the tick, then clipped to ``[tick, 1 - tick]``; if that
+    leaves them less than a tick apart the ask moves up a tick (the bid moves down at the upper
+    edge).
     """
     if policy not in POLICIES:
         raise ValueError(f"policy must be one of {POLICIES}, got {policy!r}")
@@ -342,20 +380,9 @@ def quote_prices(
     mm = mid * (1.0 - mid)
     sigma_price = sigma_hat * mm
     variance = sigma_price * sigma_price * (tau_minutes / 60.0)
-    premium = 0.0
-    if policy == "pooled_premium":
+    if policy in PREMIUM_POLICIES:
         variance += mm
-        premium = 4.0 * mm * premiums.pooled
-    elif policy == "flat_matched":
-        if premiums.matched is None:
-            raise ValueError(
-                "flat_matched needs premiums.matched: estimate_premiums(..., minutes=...)"
-            )
-        variance += mm
-        premium = 4.0 * mm * premiums.matched * params.flat_scale
-    elif policy == "release_aware":
-        variance += mm
-        premium = 4.0 * mm * premiums.by_bucket[_bucket_of(tau_minutes)]
+    premium = 4.0 * mm * premium_per_unit(policy, tau_minutes, premiums, params)
     risk = params.gamma * variance
     reservation = mid - inventory * risk
     half = 0.5 * (risk + (2.0 / params.gamma) * math.log1p(params.gamma / params.k)) + premium

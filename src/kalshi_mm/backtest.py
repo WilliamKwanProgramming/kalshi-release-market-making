@@ -39,11 +39,13 @@ from kalshi_mm.fees import kalshi_fee
 from kalshi_mm.markout import BUCKET_LABELS, trade_markouts
 from kalshi_mm.quoting import (
     POLICIES,
+    PREMIUM_POLICIES,
     Policy,
     Premiums,
     QuoteParams,
     decision_minutes,
     estimate_premiums,
+    premium_per_unit,
     quote_prices,
     realized_logit_vol,
 )
@@ -54,12 +56,12 @@ __all__ = [
     "MarketGrid",
     "backtest_grid",
     "backtest_market",
+    "mean_fill_premium",
     "prepare_market",
     "walk_forward",
 ]
 
 _PRICE_TOL = 1e-9  # prices closer than this are the same price
-_PREMIUM_POLICIES = ("pooled_premium", "flat_matched", "release_aware")
 
 
 @dataclass(frozen=True)
@@ -72,7 +74,9 @@ class EventResult:
     valid mid proxy instead of the outcome, ``quotes_live_share`` the share of refresh
     intervals in which at least one side was quoted, and ``mean_spread`` the mean of ask minus
     bid, in USD per contract, over the refresh intervals in which both sides were quoted (NaN when
-    there was none).
+    there was none). ``fill_premium`` is the premium that the fills carried: the mean over the
+    contracts filled of :func:`kalshi_mm.quoting.premium_per_unit` of the refresh whose quote was
+    hit, in USD per contract per unit of ``4 m (1 - m)`` (NaN when nothing was filled).
     """
 
     event: str
@@ -87,6 +91,24 @@ class EventResult:
     marked_pnl: float
     quotes_live_share: float
     mean_spread: float
+    fill_premium: float
+
+
+def mean_fill_premium(rows: pd.DataFrame) -> float:
+    """Mean of ``fill_premium`` over the contracts filled in ``rows``, or NaN with none.
+
+    ``rows`` has the columns ``contracts`` and ``fill_premium`` of :func:`walk_forward` (markets) or
+    of a table of events: the result is ``sum(fill_premium * contracts) / sum(contracts)`` over the
+    rows with ``contracts > 0``, in USD per contract per unit of ``4 m (1 - m)``. A row without a
+    fill has no ``fill_premium`` (NaN) and no weight.
+    """
+    contracts = rows["contracts"].to_numpy(dtype=np.float64)
+    premium = rows["fill_premium"].to_numpy(dtype=np.float64)
+    filled = contracts > 0.0
+    total = float(contracts[filled].sum())
+    if total <= 0.0:
+        return math.nan
+    return float((premium[filled] * contracts[filled]).sum() / total)
 
 
 @dataclass(frozen=True)
@@ -225,6 +247,7 @@ def backtest_grid(
     spread_n = 0
     fill_contracts: list[float] = []
     fill_prices: list[float] = []
+    premium_filled = 0.0  # sum over the fills of contracts * premium per unit of 4 m (1 - m)
     for j in range(grid.n_intervals):
         quote = quote_prices(policy, mids[j], known_inventory, taus[j], sigmas[j], premiums, params)
         if quote is None:
@@ -232,6 +255,7 @@ def backtest_grid(
             continue
         bid, ask = quote
         live += 1
+        unit = premium_per_unit(policy, taus[j], premiums, params)
         if bid == bid and ask == ask:  # both sides are quoted (a side at the limit is NaN)
             spread_sum += ask - bid
             spread_n += 1
@@ -252,6 +276,7 @@ def backtest_grid(
                         cash -= take * bid
                         fill_contracts.append(take)
                         fill_prices.append(bid)
+                        premium_filled += take * unit
                 elif prices[i] > ask_above and ask_left > 0.0:
                     take = min(ask_left, sizes[i])
                     ask_left -= take
@@ -259,6 +284,7 @@ def backtest_grid(
                     cash += take * ask
                     fill_contracts.append(take)
                     fill_prices.append(ask)
+                    premium_filled += take * unit
             if part == 0:
                 known_inventory = inventory
 
@@ -270,6 +296,7 @@ def backtest_grid(
         )
     gross = cash + inventory * y
     held_value = inventory * grid.mark if inventory != 0.0 else 0.0
+    contracts = float(sum(fill_contracts))
     return EventResult(
         event=event,
         market=market,
@@ -278,11 +305,12 @@ def backtest_grid(
         gross=gross,
         fees=fees,
         fills=len(fill_contracts),
-        contracts=float(sum(fill_contracts)),
+        contracts=contracts,
         inventory_end=inventory,
         marked_pnl=cash + held_value - fees,
         quotes_live_share=live / grid.n_intervals,
         mean_spread=spread_sum / spread_n if spread_n else math.nan,
+        fill_premium=premium_filled / contracts if contracts > 0.0 else math.nan,
     )
 
 
@@ -440,7 +468,7 @@ def walk_forward(
     sorted_markouts = markouts[needed].iloc[np.argsort(row_rank, kind="stable")]
     rows_before = np.concatenate(([0], np.cumsum(np.bincount(row_rank, minlength=n_events))))
 
-    needs_premiums = any(policy in _PREMIUM_POLICIES for policy in policies)
+    needs_premiums = any(policy in PREMIUM_POLICIES for policy in policies)
     minutes = decision_minutes(params)
     no_premiums = Premiums(0.0, (0.0,) * len(BUCKET_LABELS), 0, 0.0)
     rows: list[dict] = []
@@ -476,7 +504,7 @@ def walk_forward(
             )
     columns = [
         "event", "market", "policy", "pnl", "gross", "fees", "fills", "contracts",
-        "inventory_end", "marked_pnl", "quotes_live_share", "mean_spread", "evaluated",
-        "release_ts", "series",
+        "inventory_end", "marked_pnl", "quotes_live_share", "mean_spread", "fill_premium",
+        "evaluated", "release_ts", "series",
     ]
     return pd.DataFrame(rows, columns=columns)

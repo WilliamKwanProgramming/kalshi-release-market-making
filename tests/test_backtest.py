@@ -19,6 +19,7 @@ from kalshi_mm.fees import kalshi_fee
 from kalshi_mm.markout import bucket_index, trade_markouts
 from kalshi_mm.quoting import (
     POLICIES,
+    PREMIUM_POLICIES,
     Premiums,
     QuoteParams,
     estimate_premiums,
@@ -125,7 +126,7 @@ def test_the_settled_pnl_depends_on_the_outcome_only_through_the_inventory():
     assert lost.pnl == pytest.approx(1.96 - 0.1399, abs=1e-9)
     assert won.pnl - lost.pnl == pytest.approx(-2.0, abs=1e-9)  # q (y1 - y0), q = -2
     for field in ("fees", "fills", "contracts", "inventory_end", "marked_pnl", "quotes_live_share",
-                  "mean_spread"):
+                  "mean_spread", "fill_premium"):
         assert getattr(lost, field) == getattr(won, field)  # nothing else sees the outcome
 
 
@@ -308,6 +309,73 @@ def test_mean_spread_is_ask_minus_bid_of_the_quotes_averaged_over_the_refreshes_
     assert run(S1).mean_spread == pytest.approx(0.06, abs=1e-12)  # always_on, no premium
 
 
+# ---------------------------------------------------------------------- premium at the fills
+# a tape that fills every policy in two refreshes: in each of them a sell at 0.20 and a buy at 0.80
+# print through any quote below, and the two keep the proxy at 0.50 for the next decision
+FILL_TAPE = PRE + [
+    (9650.0, SELL, 0.20, 6.0),  # refresh 0, 6 minutes to the release, bucket (5,15]: 6 on the bid
+    (9655.0, BUY, 0.80, 4.0),  # 4 on the ask
+    (9710.0, SELL, 0.20, 3.0),  # refresh 1, 5 minutes to the release, bucket (0,5]: 3 on the bid
+    (9715.0, BUY, 0.80, 2.0),  # 2 on the ask
+]
+
+
+def test_the_premium_at_the_fills_is_the_premium_of_the_refreshes_hit_weighted_by_contracts():
+    params = replace(HAND, flat_scale=1.5)
+    got = {policy: run(FILL_TAPE, policy, premiums=PREMIUMS, params=params) for policy in POLICIES}
+    aware = got["release_aware"]
+    # 10 contracts filled at the premium of the bucket (5,15] (0.08) and 5 at that of (0,5] (0.10)
+    assert (aware.fills, aware.contracts) == (4, 15.0)
+    assert aware.fill_premium == pytest.approx((10 * 0.08 + 5 * 0.10) / 15, abs=1e-12)
+    # not the premium averaged over the six refreshes of the window, which is (0.08 + 5 * 0.10) / 6
+    assert aware.fill_premium < (0.08 + 5 * 0.10) / 6 - 0.005
+    assert got["pooled_premium"].fill_premium == pytest.approx(0.05, abs=1e-12)
+    assert got["flat_matched"].fill_premium == pytest.approx(0.04 * 1.5, abs=1e-12)  # matched * F
+    assert got["always_on"].fill_premium == 0.0
+    # pull_only is filled in the first refresh only: the others are inside its pull window
+    assert (got["pull_only"].contracts, got["pull_only"].fill_premium) == (10.0, 0.0)
+
+
+def test_a_refresh_without_a_fill_does_not_count_in_the_premium_at_the_fills():
+    for tau_minutes, unit in ((6, 0.08), (1, 0.10)):
+        ts = RELEASE - 60.0 * tau_minutes + 10.0  # 10 s into the interval of that decision
+        rows = PRE + [(ts, SELL, 0.20, 5.0)]
+        r = run(rows, "release_aware", premiums=PREMIUMS)
+        assert (r.fills, r.contracts) == (1, 5.0)
+        assert r.fill_premium == pytest.approx(unit, abs=1e-12)
+
+
+def test_the_premium_at_the_fills_weights_the_contracts_filled_not_the_size_of_the_prints():
+    rows = PRE + [
+        (9650.0, SELL, 0.20, 30.0),  # only the 10 contracts of the bid are filled
+        (9710.0, SELL, 0.20, 5.0),  # 5 contracts at the premium of the next refresh
+    ]
+    r = run(rows, "release_aware", premiums=PREMIUMS)
+    assert (r.fills, r.contracts) == (2, 15.0)
+    assert r.fill_premium == pytest.approx((10 * 0.08 + 5 * 0.10) / 15, abs=1e-12)
+
+
+def test_the_touch_rule_gives_the_premium_of_the_refresh_to_the_fills_that_it_adds():
+    # prints at the quotes of release_aware: 0.39 and 0.61 in refresh 0, 0.37 and 0.63 in refresh 1
+    rows = PRE + [
+        (9650.0, SELL, 0.39, 4.0), (9655.0, BUY, 0.61, 2.0),
+        (9710.0, SELL, 0.37, 3.0), (9715.0, BUY, 0.63, 1.0),
+    ]
+    through = run(rows, "release_aware", premiums=PREMIUMS)
+    touch = run(rows, "release_aware", premiums=PREMIUMS, params=replace(HAND, fill_rule="touch"))
+    assert through.fills == 0 and math.isnan(through.fill_premium)
+    assert (touch.fills, touch.contracts) == (4, 10.0)
+    assert touch.fill_premium == pytest.approx((6 * 0.08 + 4 * 0.10) / 10, abs=1e-12)
+
+
+def test_mean_fill_premium_weights_the_rows_by_their_contracts_and_skips_those_without_a_fill():
+    rows = pd.DataFrame({"contracts": [10.0, 0.0, 30.0], "fill_premium": [0.10, NAN, 0.20]})
+    assert bt.mean_fill_premium(rows) == pytest.approx((10 * 0.10 + 30 * 0.20) / 40, abs=1e-15)
+    assert bt.mean_fill_premium(rows.iloc[[0]]) == 0.10
+    assert math.isnan(bt.mean_fill_premium(rows.iloc[[1]]))
+    assert math.isnan(bt.mean_fill_premium(rows.iloc[:0]))
+
+
 def test_the_latency_can_take_the_inventory_past_the_limit_plus_one_size():
     """A decision does not see the fills in the second after it: a bid that was open for the
     interval before can still fill (up to the size) while the new bid, decided with the old
@@ -438,9 +506,10 @@ def test_a_market_without_a_valid_proxy_gets_no_fills():
         assert (r.fills, r.contracts, r.inventory_end, r.fees) == (0, 0.0, 0.0, 0.0)
         assert (r.pnl, r.gross, r.marked_pnl, r.quotes_live_share) == (0.0, 0.0, 0.0, 0.0)
         assert math.isnan(r.mean_spread)  # no quote, no spread
+        assert math.isnan(r.fill_premium)  # no fill, no premium at the fills
     empty = run([(9500.0, BUY, 0.5, 1.0)], "always_on", release=9000.0)  # all after the release
     assert (empty.fills, empty.quotes_live_share) == (0, 0.0)
-    assert math.isnan(empty.mean_spread)
+    assert math.isnan(empty.mean_spread) and math.isnan(empty.fill_premium)
 
 
 def test_an_empty_tape_gives_an_empty_result():
@@ -448,7 +517,7 @@ def test_an_empty_tape_gives_an_empty_result():
                         RELEASE, 1, "release_aware", PREMIUMS, 0.1, HAND)
     assert (r.fills, r.contracts, r.pnl, r.gross, r.marked_pnl, r.quotes_live_share) == (
         0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    assert math.isnan(r.mean_spread)
+    assert math.isnan(r.mean_spread) and math.isnan(r.fill_premium)
 
 
 def test_no_quote_when_the_proxy_is_outside_the_range():
@@ -585,7 +654,16 @@ def test_backtest_arguments_are_checked():
 def test_event_result_has_the_fields_of_the_brief():
     names = [f.name for f in fields(EventResult)]
     assert names == ["event", "market", "policy", "pnl", "gross", "fees", "fills", "contracts",
-                     "inventory_end", "marked_pnl", "quotes_live_share", "mean_spread"]
+                     "inventory_end", "marked_pnl", "quotes_live_share", "mean_spread",
+                     "fill_premium"]
+
+
+def _same_result(a, b):
+    """Every field of the two results is equal, a NaN equalling a NaN: from Python 3.13 on a
+    dataclass compares its fields one by one, so two results without a fill are not equal."""
+    for f in fields(EventResult):
+        x, y = getattr(a, f.name), getattr(b, f.name)
+        assert x == y or (x != x and y != y), (f.name, x, y)
 
 
 def test_backtest_grid_is_backtest_market_on_a_prepared_grid():
@@ -595,7 +673,7 @@ def test_backtest_grid_is_backtest_market_on_a_prepared_grid():
         a = backtest_grid(grid, 1, policy, PREMIUMS, 0.3, HAND, event="E", market="M")
         b = backtest_market(ts, side, price, size, RELEASE, 1, policy, PREMIUMS, 0.3, HAND,
                             event="E", market="M")
-        assert a == b
+        _same_result(a, b)
 
 
 # ------------------------------------------------------------ the slow reference implementation
@@ -907,8 +985,8 @@ def test_the_engine_does_not_read_the_latent_columns():
 
 # ------------------------------------------------------------------------------- walk_forward
 WF_COLUMNS = ["event", "market", "policy", "pnl", "gross", "fees", "fills", "contracts",
-              "inventory_end", "marked_pnl", "quotes_live_share", "mean_spread", "evaluated",
-              "release_ts", "series"]
+              "inventory_end", "marked_pnl", "quotes_live_share", "mean_spread", "fill_premium",
+              "evaluated", "release_ts", "series"]
 
 
 def window_vols(tape, market, release, params):
@@ -1042,6 +1120,24 @@ def test_a_premium_policy_gets_its_premiums_whether_it_runs_alone_or_with_the_ot
     assert not flat["pnl"].equals(together.loc[together["policy"] == "always_on", "pnl"])
 
 
+def test_walk_forward_gives_a_premium_at_the_fills_to_the_rows_with_a_fill_and_to_those_only():
+    world, params = small_world(13, n_events=26)
+    got = walk_forward(world.tape, world.markets, world.events, POLICIES, params)
+    filled = got["contracts"] > 0.0
+    assert filled.sum() > 100 and (~filled).sum() > 0
+    assert got["fill_premium"].isna().eq(~filled).all()
+    for policy in POLICIES:
+        premium = got.loc[filled & got["policy"].eq(policy), "fill_premium"]
+        if policy in PREMIUM_POLICIES:
+            assert (premium >= 0.0).all() and premium.max() > 0.0
+        else:
+            assert (premium == 0.0).all()  # no premium: nothing to weigh
+    # the rows without history (the first five events) quote no premium and so carry none
+    for policy in PREMIUM_POLICIES:
+        first = got[got["policy"].eq(policy) & ~got["evaluated"] & filled]
+        assert len(first) > 0 and (first["fill_premium"] == 0.0).all()
+
+
 def test_events_of_two_markets_run_each_market_on_its_own():
     world, params = small_world(16, n_events=30)
     tape, markets, events = merge_pairs(world)
@@ -1107,7 +1203,7 @@ def test_the_outcomes_of_other_events_do_not_matter():
     # every other event keeps its fills and fees, and its settled P&L moves by q (y_new - y_old)
     other = got["event"] != target
     for field in ("fills", "contracts", "fees", "inventory_end", "marked_pnl",
-                  "quotes_live_share", "mean_spread"):
+                  "quotes_live_share", "mean_spread", "fill_premium"):
         np.testing.assert_allclose(got.loc[other, field], base.loc[other, field], atol=1e-12)
     sign = 1.0 - 2.0 * world.markets.set_index("market").loc[got.loc[other, "market"],
                                                              "outcome"].to_numpy()
