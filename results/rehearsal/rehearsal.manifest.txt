@@ -1,0 +1,20 @@
+experiment: rehearsal
+command: python -m kalshi_mm.experiments.rehearsal --out results/rehearsal
+seeds: 20261113
+git commit: c1d7c1d39b0b6832a047654f67056857574aa14a (working tree clean)
+python 3.12.3, numpy 2.5.4, scipy 1.18.1, pandas 3.1.1
+machine: Linux x86_64, 2 logical CPUs, load average at start 1.83
+started: 2026-11-13T08:24:12Z
+runtime: 10.7 s
+world: 200 events of 30.0 hours, seed 20261113, default WorldParams otherwise
+count, events: 200
+count, releases: 200
+count, markets: 200
+count, markets without a settled outcome: 0
+count, markets with fewer than 50 trades: 0
+count, markets without a mid proxy in the quoting window: 0
+count, markets kept: 200
+count, releases kept: 200
+count, trades kept: 100213
+outputs: summary.json, p1_buckets.csv, p2_releases.csv, p3_fits.csv, tables.md, rehearsal.manifest.txt
+notes: synthetic data; read back from SQLite like the real run

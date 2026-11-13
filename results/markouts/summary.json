@@ -1,0 +1,251 @@
+{
+  "experiment": "recovery",
+  "data": "synthetic",
+  "design": {
+    "reps": 100,
+    "reps_design": 200,
+    "B": 1000,
+    "pop_events": 3000,
+    "sizes": [
+      25,
+      50,
+      100,
+      200,
+      400
+    ]
+  },
+  "worlds": {
+    "planted": {
+      "overrides": {}
+    },
+    "spec_null": {
+      "overrides": {
+        "pi1": 0.0
+      }
+    },
+    "flat_null": {
+      "overrides": {
+        "pi1": 0.0,
+        "surge": 0.0
+      }
+    }
+  },
+  "estimands": {
+    "raw_0_30": {
+      "label": "(a) raw D, near (0, 30]",
+      "column": "adverse_selection",
+      "near": [
+        0.0,
+        30.0
+      ]
+    },
+    "scaled_0_30": {
+      "label": "(b) scaled D, near (0, 30]",
+      "column": "adverse_selection_scaled",
+      "near": [
+        0.0,
+        30.0
+      ]
+    },
+    "raw_5_30": {
+      "label": "(c) raw D, near (5, 30]",
+      "column": "adverse_selection",
+      "near": [
+        5.0,
+        30.0
+      ]
+    },
+    "scaled_5_30": {
+      "label": "(d) scaled D, near (5, 30]",
+      "column": "adverse_selection_scaled",
+      "near": [
+        5.0,
+        30.0
+      ]
+    }
+  },
+  "population": {
+    "planted": {
+      "n_events": 3000,
+      "n_trades": 959517,
+      "saturation_share": 0.837,
+      "effects": [
+        {
+          "estimand": "raw_0_30",
+          "D_cents": 0.9103280483,
+          "lo_cents": 0.8377080074,
+          "hi_cents": 0.9880530252,
+          "mean_near_cents": 1.5731686423,
+          "mean_quiet_cents": 0.662840594,
+          "n_near": 250975,
+          "n_quiet": 169887,
+          "n_events": 3000,
+          "sign": "positive"
+        },
+        {
+          "estimand": "scaled_0_30",
+          "D_cents": 6.5661315436,
+          "lo_cents": 6.3563941518,
+          "hi_cents": 6.7682793335,
+          "mean_near_cents": 7.4390224772,
+          "mean_quiet_cents": 0.8728909336,
+          "n_near": 98986,
+          "n_quiet": 169038,
+          "n_events": 3000,
+          "sign": "positive"
+        },
+        {
+          "estimand": "raw_5_30",
+          "D_cents": 1.0957542866,
+          "lo_cents": 1.0117420421,
+          "hi_cents": 1.1824938211,
+          "mean_near_cents": 1.7585948806,
+          "mean_quiet_cents": 0.662840594,
+          "n_near": 201079,
+          "n_quiet": 169887,
+          "n_events": 3000,
+          "sign": "positive"
+        },
+        {
+          "estimand": "scaled_5_30",
+          "D_cents": 6.417762596,
+          "lo_cents": 6.2033265129,
+          "hi_cents": 6.6419432275,
+          "mean_near_cents": 7.2906535296,
+          "mean_quiet_cents": 0.8728909336,
+          "n_near": 89579,
+          "n_quiet": 169038,
+          "n_events": 3000,
+          "sign": "positive"
+        }
+      ]
+    },
+    "spec_null": {
+      "n_events": 3000,
+      "n_trades": 959517,
+      "saturation_share": 0.13933333333333334,
+      "effects": [
+        {
+          "estimand": "raw_0_30",
+          "D_cents": 0.4063067766,
+          "lo_cents": 0.3727677978,
+          "hi_cents": 0.4430003891,
+          "mean_near_cents": 1.0691503138,
+          "mean_quiet_cents": 0.6628435372,
+          "n_near": 250975,
+          "n_quiet": 169887,
+          "n_events": 3000,
+          "sign": "positive"
+        },
+        {
+          "estimand": "scaled_0_30",
+          "D_cents": 1.5541899285,
+          "lo_cents": 1.5097881668,
+          "hi_cents": 1.6013858298,
+          "mean_near_cents": 2.4270857771,
+          "mean_quiet_cents": 0.8728958486,
+          "n_near": 193609,
+          "n_quiet": 169038,
+          "n_events": 3000,
+          "sign": "positive"
+        },
+        {
+          "estimand": "raw_5_30",
+          "D_cents": 0.4430302736,
+          "lo_cents": 0.4080371113,
+          "hi_cents": 0.4810878379,
+          "mean_near_cents": 1.1058738108,
+          "mean_quiet_cents": 0.6628435372,
+          "n_near": 201079,
+          "n_quiet": 169887,
+          "n_events": 3000,
+          "sign": "positive"
+        },
+        {
+          "estimand": "scaled_5_30",
+          "D_cents": 1.6089409885,
+          "lo_cents": 1.5588732348,
+          "hi_cents": 1.6615603766,
+          "mean_near_cents": 2.4818368372,
+          "mean_quiet_cents": 0.8728958486,
+          "n_near": 156671,
+          "n_quiet": 169038,
+          "n_events": 3000,
+          "sign": "positive"
+        }
+      ]
+    },
+    "flat_null": {
+      "n_events": 3000,
+      "n_trades": 359849,
+      "saturation_share": 0.016,
+      "effects": [
+        {
+          "estimand": "raw_0_30",
+          "D_cents": -0.163177598,
+          "lo_cents": -0.1892773151,
+          "hi_cents": -0.1349850477,
+          "mean_near_cents": 0.4917206133,
+          "mean_quiet_cents": 0.6548982113,
+          "n_near": 14675,
+          "n_quiet": 168388,
+          "n_events": 3000,
+          "sign": "negative"
+        },
+        {
+          "estimand": "scaled_0_30",
+          "D_cents": -0.0390146777,
+          "lo_cents": -0.077699986,
+          "hi_cents": 0.0031931127,
+          "mean_near_cents": 0.8239641188,
+          "mean_quiet_cents": 0.8629787965,
+          "n_near": 13684,
+          "n_quiet": 167458,
+          "n_events": 3000,
+          "sign": "zero"
+        },
+        {
+          "estimand": "raw_5_30",
+          "D_cents": -0.1214069517,
+          "lo_cents": -0.1501547965,
+          "hi_cents": -0.0897715499,
+          "mean_near_cents": 0.5334912596,
+          "mean_quiet_cents": 0.6548982113,
+          "n_near": 12242,
+          "n_quiet": 168388,
+          "n_events": 3000,
+          "sign": "negative"
+        },
+        {
+          "estimand": "scaled_5_30",
+          "D_cents": 0.0312811571,
+          "lo_cents": -0.012337314,
+          "hi_cents": 0.0779473506,
+          "mean_near_cents": 0.8942599535,
+          "mean_quiet_cents": 0.8629787965,
+          "n_near": 11437,
+          "n_quiet": 167458,
+          "n_events": 3000,
+          "sign": "zero"
+        }
+      ]
+    }
+  },
+  "surge_share": {
+    "share": 0.4463300646192809,
+    "ci": [
+      0.4141029625347818,
+      0.47966476267747354
+    ],
+    "n_events": 3000,
+    "B": 1000,
+    "B_undefined": 0,
+    "seed": 20261113
+  },
+  "sample_size_planted": {
+    "raw_0_30": 50,
+    "scaled_0_30": 25,
+    "raw_5_30": 25,
+    "scaled_5_30": 25
+  }
+}

@@ -1,0 +1,14 @@
+experiment: backtest_study
+command: python -m kalshi_mm.experiments.backtest_study --out results/backtest
+seeds: 20261113 (bootstrap); datasets 1 to 10
+git commit: c1d7c1d39b0b6832a047654f67056857574aa14a (working tree clean)
+python 3.12.3, numpy 2.5.4, scipy 1.18.1, pandas 3.1.1
+machine: Linux x86_64, 2 logical CPUs, load average at start 2.71
+started: 2026-11-13T08:21:14Z
+runtime: 109.9 s
+worlds: null (pi1 = 0) and planted (pi1 = 0.2), 200 events each; dataset seeds 1 to 10 (event e of a dataset uses default_rng([seed, e]))
+bootstrap: 10000 replications over events, 95% percentile intervals, generators default_rng([20261113, analysis, ...])
+quote parameters: QuoteParams(gamma=0.002, k=100.0, size=10.0, max_position=100.0, refresh_s=60.0, latency_s=1.0, tick=0.01, pull_minutes=5.0, min_mid=0.03, max_mid=0.97, window_hours=12.0, vol_lookback_s=7200.0, stale_s=3600.0, horizon_s=300.0, min_history_events=20, sigma_default=0.1, maker_fee_coeff=0.0175, fill_rule='through')
+B8, added after the first results (exploratory): the planted world with 30 hours of trading before each release instead of 12, the same dataset seeds, only the policies release_aware and pooled_premium; bootstrap generators default_rng([20261113, 5, window index, seed])
+outputs: per_event.csv, policies.csv, pairs.csv, events_needed.csv, premium_check.csv, windows.csv, per_event_windows.csv, summary.json, tables.md
+notes: 20 burn-in events per dataset; sweeps on dataset seed 1
