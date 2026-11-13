@@ -209,11 +209,14 @@ def _p3_table(results: Results, prefix: str, label: str, boot: str) -> str:
     r = p3["primary"]
     missing = f"Markets without a price at {s.recal_hours:g} hours before the release"
     if r is None:
+        have = p3["n_releases_with_price"]
         why = (f"it failed: {p3['error']}" if p3["error"]
-               else f"it needs more than {s.recal_min_releases} releases with a price before the "
-                    "first prediction")
+               else f"it needs more than {s.recal_min_releases} releases with a price "
+                    f"{s.recal_hours:g} hours before the release, and {have:,} "
+                    f"{'has' if have == 1 else 'have'} one")
         reading = f"the recalibration was not computed: {why}."
-        rows = [["Markets", f"{p3['n_markets']:,}"], [missing, f"{p3['n_without_price']:,}"]]
+        rows = [["Markets", f"{p3['n_markets']:,}"], [missing, f"{p3['n_without_price']:,}"],
+                ["Releases with a price", f"{have:,}"]]
     else:
         reading = (f"BSS = {_num(r['bss'], 4)} {_interval(r['ci'], 4)} over {r['n']:,} markets "
                    f"({boot}); positive means that the recalibration helps out of sample.")

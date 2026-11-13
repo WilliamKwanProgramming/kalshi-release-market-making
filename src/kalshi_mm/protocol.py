@@ -399,7 +399,8 @@ def p3_recalibration(ds: Dataset, settings: Settings = DEFAULT) -> dict[str, Any
     """P3 of docs/protocol.md: the skill of the walk-forward recalibration of the mid proxy.
 
     The price of a market is the proxy at ``settings.recal_hours`` before its release; a market
-    with no proxy then is left out and counted in ``n_without_price``. The skill is
+    with no proxy then is left out and counted in ``n_without_price`` (``n_releases_with_price``
+    is the number of releases that still have a market). The skill is
     ``calibration.skill_interval`` of the walk-forward recalibration (``recal_min_releases``
     releases before the first prediction, refit every ``recal_refit_every`` releases) with
     releases as clusters. Reported, not tested: the fitted ``(a, b)`` over time (``walk``, one
@@ -425,6 +426,7 @@ def p3_recalibration(ds: Dataset, settings: Settings = DEFAULT) -> dict[str, Any
     out: dict[str, Any] = {
         "n_markets": int(len(prices)),
         "n_without_price": int(len(prices) - len(usable)),
+        "n_releases_with_price": int(usable["release_ts"].nunique()),
         "primary": None,
         "walk": None,
         "by_series": {},

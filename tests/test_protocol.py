@@ -311,6 +311,7 @@ def test_p3_with_too_few_releases_has_no_value_and_no_error():
     settings = with_overrides(DEFAULT, ["recal_hours=1", "recal_min_releases=30", "n_boot=100"])
     out = p3_recalibration(_separated_dataset(20), settings)
     assert out["primary"] is None and out["error"] is None
+    assert out["n_releases_with_price"] == 20
 
 
 def test_p3_needs_more_releases_than_the_minimum_for_a_first_fit():
@@ -434,7 +435,7 @@ def test_p3_prices_each_market_at_the_proxy_recal_hours_before_its_release():
     assert ds.counts["releases kept"] == 13
     out = p3_recalibration(ds, settings)
     assert out["error"] is None and out["walk"] is not None
-    assert (out["n_markets"], out["n_without_price"]) == (13, 1)
+    assert (out["n_markets"], out["n_without_price"], out["n_releases_with_price"]) == (13, 1, 12)
     walk = out["walk"].sort_values("release_ts")
     assert walk["price"].to_numpy() == pytest.approx([0.48, 0.58])
     assert walk["outcome"].tolist() == [0, 1]

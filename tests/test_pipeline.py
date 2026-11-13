@@ -43,7 +43,7 @@ from kalshi_mm.protocol import (
     run_protocol,
     with_overrides,
 )
-from kalshi_mm.protocol_report import write_results
+from kalshi_mm.protocol_report import tables_markdown, write_results
 from kalshi_mm.quoting import POLICIES
 from kalshi_mm.world import WorldParams, generate_world
 
@@ -334,6 +334,17 @@ def test_synthetic_results_are_refused_a_directory_named_real(run, tmp_path):
     with pytest.raises(ValueError, match="named real"):
         write_results(results, tmp_path / "real")
     assert not (tmp_path / "real").exists()
+
+
+def test_a_p3_without_prices_says_why_it_was_not_computed(world):
+    settings = with_overrides(DEFAULT, [*SMALL, "recal_hours=24"])  # the world is 8 hours long
+    results = run_protocol(world.tape, world.markets, world.events, "synthetic", settings)
+    assert results.p3["primary"] is None and results.p3["error"] is None
+    assert (results.p3["n_markets"], results.p3["n_without_price"]) == (26, 26)
+    assert results.family["P3"]["verdict"] == "not computed"
+    text = tables_markdown(results)
+    assert ("the recalibration was not computed: it needs more than 12 releases with a price "
+            "24 hours before the release, and 0 have one.") in text
 
 
 def test_real_results_are_refused_a_directory_named_rehearsal(world, tmp_path):
