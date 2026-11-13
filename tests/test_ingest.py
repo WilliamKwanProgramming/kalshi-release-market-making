@@ -820,17 +820,18 @@ class FakeApi:
     ``live_markets`` and ``historical_markets`` map a series to its market records, ``trades`` maps
     a ticker to its trade records. The historical trade endpoint serves the trades created before
     ``CUTOFF_TS`` and the live one those created at or after it (``overlap``: both serve a trade
-    created exactly at the cutoff). ``min_ts`` and ``max_ts`` are inclusive and the newest trades
-    come first. A page holds at most ``page_size`` records whatever ``limit`` says. ``cutoffs``
+    created exactly at the cutoff). ``min_ts`` and ``max_ts`` are inclusive, or exclusive with
+    ``strict_bounds`` (the documentation does not say which), and the newest trades come first. A
+    page holds at most ``page_size`` records whatever ``limit`` says. ``cutoffs``
     lists the answers of the cutoff endpoint, the last one repeated. After ``fail_after`` requests
     every answer is HTTP 500. ``urls`` records every request.
     """
 
     def __init__(self, live_markets, historical_markets, trades, *, cutoffs=(CUTOFFS,),
-                 page_size=3, overlap=False, fail_after=None):
+                 page_size=3, overlap=False, strict_bounds=False, fail_after=None):
         self.live_markets, self.historical_markets = live_markets, historical_markets
         self.trades, self.cutoffs, self.page_size = trades, list(cutoffs), page_size
-        self.overlap, self.fail_after = overlap, fail_after
+        self.overlap, self.strict_bounds, self.fail_after = overlap, strict_bounds, fail_after
         self.urls = []
 
     @staticmethod
@@ -866,7 +867,8 @@ class FakeApi:
         for record in self.trades.get(query["ticker"], []):
             ts = pd.Timestamp(record["created_time"]).timestamp()
             held = ts < CUTOFF_TS if path == "/historical/trades" else ts >= CUTOFF_TS
-            if low <= ts <= high and (held or (self.overlap and ts == CUTOFF_TS)):
+            inside = low < ts < high if self.strict_bounds else low <= ts <= high
+            if inside and (held or (self.overlap and ts == CUTOFF_TS)):
                 found.append((ts, record))
         found.sort(key=lambda pair: (pair[0], pair[1]["trade_id"]), reverse=True)
         return [record for _, record in found]
@@ -1023,14 +1025,15 @@ def test_a_release_before_the_cutoff_needs_only_the_historical_endpoint():
 
 
 def test_a_release_after_the_cutoff_needs_both_endpoints_split_at_the_cutoff():
-    assert trade_queries(201.0, 200.0) == [("historical", None, 200), ("live", 200, 201)]
+    assert trade_queries(201.0, 200.0) == [("historical", None, 200), ("live", 199, 201)]
 
 
 def test_query_ranges_are_rounded_outwards_to_whole_seconds():
     got = trade_queries(1000.5, 500.25)
-    assert got == [("historical", None, 501), ("live", 500, 1001)]
+    assert got == [("historical", None, 501), ("live", 499, 1001)]
     assert all(isinstance(q.max_ts, int) for q in got)
     assert trade_queries(1000.5, 2000.0) == [("historical", None, 1001)]
+    assert trade_queries(1000.0, 500.0) == [("historical", None, 500), ("live", 499, 1000)]
 
 
 # ------------------------------------------------------------------------ list_series_markets
@@ -1166,12 +1169,15 @@ def test_a_run_stores_what_the_filters_keep_and_reads_back_as_the_expected_frame
     assert (r.trades_duplicate, r.trades_block, r.trades_at_or_after_release,
             r.trades_in_dropped_markets, r.trades_kept) == (1, 2, 2, 10, 226)
     assert_report_adds_up(r)
-    first, last = str(int(R_SEP)), str(int(CUTOFF_TS))
+    sep_release, cutoff = str(int(R_SEP)), str(int(CUTOFF_TS))
+    live_from, oct_release = str(int(CUTOFF_TS) - 1), str(int(RELEASE_TS))
     assert api.trade_requests() == {
-        ("/historical/trades", S3, None, first), ("/historical/trades", S4, None, first),
-        ("/historical/trades", S9, None, first),
-        ("/historical/trades", O3, None, last), ("/markets/trades", O3, last, str(int(RELEASE_TS))),
-        ("/historical/trades", O4, None, last), ("/markets/trades", O4, last, str(int(RELEASE_TS)))}
+        ("/historical/trades", ticker, None, sep_release) for ticker in (S3, S4, S9)
+    } | {
+        ("/historical/trades", ticker, None, cutoff) for ticker in (O3, O4)
+    } | {
+        ("/markets/trades", ticker, live_from, oct_release) for ticker in (O3, O4)
+    }
     assert len(api.requests("/historical/cutoff")) == 2  # before and after the run
     assert lines == [
         "KXCPI: trades created before 2026-10-20T00:00:00Z are on the historical endpoint; "
@@ -1189,6 +1195,18 @@ def test_a_trade_on_both_endpoints_at_the_cutoff_is_stored_once(tmp_path, db):
     assert_stored(db, world)
     # O3 and O4 each have a trade created exactly at the cutoff: read twice, counted once
     assert summary.report.trades_in == 244 and summary.report.trades_duplicate == 3
+
+
+@pytest.mark.parametrize("strict_bounds", [False, True])
+@pytest.mark.parametrize("overlap", [False, True])
+def test_the_trades_around_the_cutoff_are_read_whichever_way_the_bounds_are_treated(
+        tmp_path, db, overlap, strict_bounds):
+    """The documentation does not say whether ``min_ts`` and ``max_ts`` are included; a trade
+    created exactly at the cutoff, and the trade at the release, must give the same dataset
+    under both readings."""
+    world = canned_world()
+    run_ingest(db, tmp_path, make_api(world, overlap=overlap, strict_bounds=strict_bounds))
+    assert_stored(db, world)
 
 
 def test_a_second_run_changes_nothing_and_does_not_fetch_stored_markets_again(tmp_path, db):
@@ -1320,7 +1338,8 @@ def test_the_defaults_are_the_series_dates_and_minimum_of_the_protocol(script):
 def test_a_run_prints_the_agreement_notice_and_the_counts_and_stores_the_data(script, tmp_path):
     status, text = run_cli(script, tmp_path)
     assert status == 0
-    assert "Developer Agreement" in text and "section 3.1" in text and "no credentials" in text
+    assert "Developer Agreement, v1.1" in text and "Kalshi-Developer-Agreement.pdf" in text
+    assert "Section 3.1 prohibits" in text and "sends no credentials" in text
     assert ("KXCPI: 9 market records: 4 out of scope, 0 already in the database, 5 fetched, "
             "4 stored") in text
     assert "markets: 9 read" in text and "trades: 242 read" in text and "kept 226" in text

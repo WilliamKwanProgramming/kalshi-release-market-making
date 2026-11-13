@@ -141,8 +141,9 @@ def _time(record: Mapping[str, Any], name: str, reason: str) -> float:
 def parse_trade(record: Mapping[str, Any]) -> dict[str, Any]:
     """One trade record as ``ts``, ``price``, ``size``, ``side``, ``trade_id``, ``is_block_trade``.
 
-    ``side`` is +1 if ``taker_outcome_side`` is ``yes`` (the taker bought YES: it hit the ask)
-    and -1 if it is ``no``; only when that field is absent is the deprecated ``taker_side`` read.
+    ``side`` is +1 if ``taker_outcome_side`` is ``yes`` (the taker is long YES: it bought YES or
+    sold NO) and -1 if it is ``no``; only when that field is absent is the deprecated
+    ``taker_side`` read.
     ``block_flag_missing`` is true when the record has no boolean ``is_block_trade`` (then the
     trade counts as not a block trade, and the report says how many did).
 
@@ -576,10 +577,14 @@ def trade_queries(release_ts: float, cutoff_ts: float) -> list[TradeQuery]:
     Trades created before the cutoff (``trades_created_ts`` of ``GET /historical/cutoff``) are on
     the historical endpoint only, later ones on the live endpoint. A release at or before the
     cutoff needs the historical endpoint alone. A later release needs both: the historical one for
-    the trades before the cutoff and the live one from the cutoff to the release. The ranges are
-    rounded outwards to whole seconds, so they overlap by up to a second at the cutoff and reach
-    the second of the release; the documentation does not say whether ``min_ts`` and ``max_ts`` are
-    inclusive, and :func:`build_dataset` removes repeated ``trade_id`` and trades at or after the
+    the trades before the cutoff and the live one from the cutoff to the release.
+
+    The documentation describes ``min_ts`` and ``max_ts`` as "after" and "before" a Unix time and
+    does not say whether the bound itself is included, so the ranges are widened until they are
+    right for either reading: the upper bounds (the cutoff for the historical endpoint, the
+    release) are rounded up to a whole second, and the live range starts a whole second before the
+    cutoff, so that a trade created exactly at the cutoff is read. A trade can then come from both
+    endpoints; :func:`build_dataset` removes repeated ``trade_id`` and trades at or after the
     release.
     """
     last = math.ceil(release_ts)
@@ -587,7 +592,7 @@ def trade_queries(release_ts: float, cutoff_ts: float) -> list[TradeQuery]:
         return [TradeQuery("historical", None, last)]
     return [
         TradeQuery("historical", None, math.ceil(cutoff_ts)),
-        TradeQuery("live", math.floor(cutoff_ts), last),
+        TradeQuery("live", math.floor(cutoff_ts) - 1, last),
     ]
 
 

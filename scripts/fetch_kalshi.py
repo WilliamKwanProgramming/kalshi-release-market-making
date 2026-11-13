@@ -32,13 +32,14 @@ from kalshi_mm import ingest, panel
 from kalshi_mm.kalshi_api import KalshiApiError, KalshiClient
 
 NOTICE = """\
-Kalshi's Developer Agreement (v1.1, https://kalshi-public-docs.s3.amazonaws.com/Kalshi-Developer-
-Agreement.pdf) says in section 3.1 that collecting, caching, aggregating or storing data accessed
-via the API is prohibited except to facilitate your own trading on Kalshi, and that such data may
-not be shared with third parties without prior written authorization from Kalshi. This script
-sends no credentials and cannot tell whether the agreement covers the public endpoints. Read it
-before you run this. The data go to the database you name; keep them out of version control
-(data/ is ignored by git)."""
+Kalshi's Developer Agreement, v1.1:
+https://kalshi-public-docs.s3.amazonaws.com/Kalshi-Developer-Agreement.pdf
+Section 3 limits use of the API to facilitating a member's own trading. Section 3.1 prohibits
+collecting, caching, aggregating or storing data accessed via the API except to facilitate your own
+trading on Kalshi, and sharing such data with third parties without Kalshi's prior written
+authorization. This script sends no credentials, and the agreement does not say whether it covers
+the public endpoints. Read it before you run this. The data go to the database you name; keep them
+out of version control (data/ is ignored by git)."""
 
 
 def build_parser() -> argparse.ArgumentParser:
