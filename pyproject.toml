@@ -9,13 +9,13 @@ description = "Release-aware market making on Kalshi macro contracts: simulator,
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "numpy>=2.0",
-    "scipy>=1.13",
-    "pandas>=2.2",
+    "numpy>=2.0.0",
+    "scipy>=1.13.0",
+    "pandas>=2.2.2",
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8.0", "ruff>=0.5"]
+test = ["pytest>=8.0.0", "ruff>=0.6.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

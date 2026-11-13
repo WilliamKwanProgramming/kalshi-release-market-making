@@ -32,6 +32,24 @@ jobs:
       - name: Tests
         run: pytest -q
 
+  lowest-versions:
+    name: Tests with the lowest supported versions
+    runs-on: ubuntu-24.04
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the package with the lower bounds of pyproject.toml exactly
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -c constraints/lowest.txt -e ".[test]"
+      - name: Tests
+        run: pytest -q -W error
+
   readme-numbers:
     name: README numbers match the results files
     runs-on: ubuntu-24.04
