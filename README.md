@@ -14,7 +14,7 @@ A Python library that measures adverse selection in Kalshi's release-day contrac
 | Avellaneda-Stoikov quoting, five policies, trade-through backtest with Kalshi fees | yes | yes (closed forms, look-ahead guards) | yes (tables B) | not run |
 | Favourite-longshot recalibration and Brier skill | yes | yes | yes (tables C) | not run |
 | Protocol analysis P1 to P3, Holm family, tables, runner | yes | yes (end-to-end test) | yes (rehearsal, tables R) | not run |
-| Mutation check of the test suite | yes (335 hand-written mutants, all caught) | n/a | n/a | n/a |
+| Mutation check of the test suite | yes (437 hand-written mutants, all caught) | n/a | n/a | n/a |
 | Release calendar (BLS, BEA, Federal Reserve) | no | no | no | not run: supplied by the user |
 
 Model: [docs/model.md](docs/model.md). Protocol for the real data: [docs/protocol.md](docs/protocol.md). Data
