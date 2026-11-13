@@ -413,19 +413,21 @@ def test_paired_mean_resamples_releases_with_the_seed_of_the_settings():
     assert wide[0] < lo and wide[1] > hi
 
 
-def _recalibration_world():
-    """Thirteen releases, one market each, a day and a bit apart.
+def _recalibration_world(spacing=100_000.0, prices=None, outcomes=None):
+    """Thirteen releases, one market each, a day and a bit apart (``spacing`` seconds).
 
     Market ``i`` has a buy and a sell print a little before 24 hours ahead of its release, around
     ``PRICES[i]``, and a pair of prints about 33 minutes ahead of the release, around ``0.9 -
     PRICES[i]`` (the proxy there, if the price is taken too late). The last market has the second
     pair only, so it has no proxy 24 hours ahead.
     """
-    prices = [0.30, 0.50, 0.40, 0.60, 0.35, 0.55, 0.45, 0.65, 0.42, 0.52, 0.48, 0.58]
-    outcomes = [0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1]
+    if prices is None:
+        prices = [0.30, 0.50, 0.40, 0.60, 0.35, 0.55, 0.45, 0.65, 0.42, 0.52, 0.48, 0.58]
+    if outcomes is None:
+        outcomes = [0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1]
     tapes, markets, events = [], [], []
     for i, outcome in enumerate(outcomes):
-        release = RELEASE + i * 100_000.0
+        release = RELEASE + i * spacing
         late = 0.9 - prices[i] if i < len(prices) else 0.70
         rows = [(release - 100.0, 1, 0.90), (release - 50.0, -1, 0.80),
                 (release - 2000.0, 1, late + 0.02), (release - 1900.0, -1, late - 0.02)]
@@ -461,3 +463,52 @@ def test_p3_prices_each_market_at_the_proxy_recal_hours_before_its_release():
     late = other["walk"].sort_values("release_ts")
     assert late["price"].to_numpy() == pytest.approx([0.42, 0.32, 0.70])
     assert late["n_fit"].tolist() == [10, 11, 12]
+
+
+def test_p3_fit_leaves_out_releases_that_come_after_the_price_time():
+    """Releases 12 hours apart (numbered from 0) and prices taken 24 hours ahead. Releases 0 to 9
+    precede the price time of release 12, which starts the first block of three scored releases;
+    the second block starts at release 15 and its fit holds releases 0 to 12 (the price time of
+    release 15 is the time of release 13, and only releases strictly before it count). Flipping the
+    outcome of release 13 or 14 cannot change the second block, because the prices of its releases
+    were observed before those outcomes were known; flipping release 12 or 11 does. A fit on every
+    earlier release, as in the first version, fails this test."""
+    prices = [0.30 + 0.04 * (i * 5 % 9) for i in range(18)]
+    outcomes = [0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 0, 0, 1, 0, 1, 1]
+    settings = dataclasses.replace(
+        DEFAULT, min_trades=4, recal_min_releases=10, recal_refit_every=3, n_boot=50)
+
+    def walk(flip=None):
+        flipped = list(outcomes)
+        if flip is not None:
+            flipped[flip] = 1 - flipped[flip]
+        out = p3_recalibration(
+            prepare(*_recalibration_world(12 * HOUR, prices, flipped), settings), settings)
+        assert out["error"] is None
+        return out["walk"].sort_values("release_ts").reset_index(drop=True)
+
+    first_of_second_block = RELEASE + 15 * 12 * HOUR
+    columns = ["a", "b", "recal", "n_fit"]
+    base = walk()
+    assert base["release_ts"].tolist() == [RELEASE + i * 12 * HOUR for i in range(12, 18)]
+    assert base["n_fit"].tolist() == [10] * 3 + [13] * 3
+    second = base[base["release_ts"] >= first_of_second_block][columns]
+    for not_yet_known in (13, 14):
+        changed = walk(not_yet_known)
+        part = changed[changed["release_ts"] >= first_of_second_block][columns]
+        pd.testing.assert_frame_equal(part, second, check_exact=True)
+    for known in (12, 11):  # the test can see a change when there is one
+        changed = walk(known)
+        part = changed[changed["release_ts"] >= first_of_second_block][columns]
+        assert not np.allclose(part["a"], second["a"])
+
+
+def test_p3_without_a_scored_release_has_no_value_and_no_error():
+    """Releases 12 hours apart and prices 24 hours ahead: twelve releases have a price, but only
+    ten lie before the price time of the 13th, so with ten releases needed for a first fit no
+    release is scored. That is too few releases, not a failed fit."""
+    settings = dataclasses.replace(
+        DEFAULT, min_trades=4, recal_min_releases=10, recal_refit_every=1, n_boot=50)
+    out = p3_recalibration(prepare(*_recalibration_world(12 * HOUR), settings), settings)
+    assert out["n_releases_with_price"] == 12
+    assert out["primary"] is None and out["walk"] is None and out["error"] is None

@@ -197,32 +197,41 @@ def walk_forward_recalibration(
     min_events: int = 50,
     refit_every: int = 10,
     cluster: ArrayLike | None = None,
+    gap_hours: float = 0.0,
 ) -> pd.DataFrame:
     """Out-of-sample recalibrated probabilities from an expanding window (docs/model.md section 8).
 
-    The distinct values of ``release_ts`` are the releases (several markets may share one). Let
-    ``T_1 < T_2 < ...`` be them in time order. The first release that is scored is the
-    ``(min_events + 1)``-th. The coefficients used for release ``T_k`` are fitted by
-    :func:`fit_recalibration` on every observation with ``release_ts`` strictly earlier than
-    ``T_k'`` where ``k'`` is the release at which the last refit happened: the fit is refreshed
-    when ``refit_every`` further releases have passed since the previous one (the first fit is at
-    release ``min_events + 1``, the next at ``min_events + 1 + refit_every``, and so on). All
-    observations of one release share the same coefficients, and no observation of the release
-    itself or of a later one enters the fit, so changing or deleting data from time ``T_k`` on
-    cannot change a row of a release up to ``T_k``. A fit that fails (see
-    :class:`RecalibrationError`) stops the run with a message that names the release.
+    The distinct values of ``release_ts`` are the releases (several markets may share one); the
+    outcome of a release is taken to be known at its ``release_ts``. Let ``T_1 < T_2 < ...`` be
+    them in time order. A release ``T_k`` is scored with the price observed ``gap_hours`` before
+    it (the caller has taken that price), so only the outcomes of releases earlier than
+    ``T_k - gap_hours`` were known when the price was observed. The coefficients used for release
+    ``T_k`` are fitted by :func:`fit_recalibration` on every observation with ``release_ts``
+    strictly earlier than ``T_k' - gap_hours``, where ``k'`` is the release at which the last
+    refit happened: the fit is refreshed when ``refit_every`` further releases have passed since
+    the previous one, and the releases inside the gap are left out although their outcomes are
+    known by ``T_k``. The first release that is scored is the first one with at least
+    ``min_events`` releases strictly earlier than its price time: the ``(min_events + 1)``-th
+    unless releases lie within ``gap_hours`` of each other. All observations of one release share
+    the same coefficients, and no observation of the release itself, of a later one or of one
+    inside the gap enters the fit, so changing or deleting data from time ``T_k - gap_hours`` on
+    cannot change the coefficients used for ``T_k``, and data from ``T_k`` on cannot change a row
+    of a release before ``T_k``. A fit that fails (see :class:`RecalibrationError`) stops the run
+    with a message that names the release.
 
     Returns one row per observation of a scored release, in the order of ``release_ts``, then
     ``price``, then ``outcome``, then the cluster label: the order does not depend on the order of
     the input. Columns ``price``, ``recal`` (the recalibrated probability), ``outcome`` (0 or 1),
     ``release_ts``, ``a``, ``b`` (the coefficients used), ``n_fit`` (observations in that fit) and,
     when ``cluster`` (one label per input row) is given, ``cluster``, so that ``frame["cluster"]``
-    can be passed to :func:`skill_interval`. The frame is empty when there are not more than
-    ``min_events`` releases.
+    can be passed to :func:`skill_interval`. The frame is empty when no release has ``min_events``
+    releases before its price time.
     """
     for name, value in (("min_events", min_events), ("refit_every", refit_every)):
         if int(value) != value or value < 1:
             raise ValueError(f"{name} must be a positive integer, got {value!r}")
+    if not (np.isfinite(gap_hours) and gap_hours >= 0.0):
+        raise ValueError(f"gap_hours must be finite and not negative, got {gap_hours!r}")
     p, y = _pair(price, outcome)
     ts = np.asarray(release_ts, dtype=float)
     if ts.shape != p.shape or not np.all(np.isfinite(ts)):
@@ -235,24 +244,29 @@ def walk_forward_recalibration(
 
     releases, first = np.unique(ts, return_index=True)  # first row of each release in time order
     n, k_total = p.size, releases.size
+    price_time = releases - 3600.0 * float(gap_hours)
+    known = np.searchsorted(releases, price_time, side="left")  # releases before each price time
+    eligible = np.flatnonzero(known >= min_events)
+    first_scored = int(eligible[0]) if eligible.size else k_total
     columns = {"price": p, "recal": np.empty(n), "outcome": y.astype(np.int64), "release_ts": ts,
                "a": np.empty(n), "b": np.empty(n), "n_fit": np.zeros(n, dtype=np.int64)}
-    for k in range(min_events, k_total, refit_every):
+    for k in range(first_scored, k_total, refit_every):
         start = int(first[k])  # rows before it belong to earlier releases
         stop = int(first[k + refit_every]) if k + refit_every < k_total else n
+        in_fit = int(np.searchsorted(ts, price_time[k], side="left"))  # rows known at price time
         try:
-            a, b = fit_recalibration(p[:start], y[:start])
+            a, b = fit_recalibration(p[:in_fit], y[:in_fit])
         except RecalibrationError as err:
             raise RecalibrationError(
                 f"the fit before the release at {releases[k]:.0f} failed: {err}"
             ) from err
         columns["recal"][start:stop] = recalibrate(p[start:stop], a, b)
         columns["a"][start:stop], columns["b"][start:stop] = a, b
-        columns["n_fit"][start:stop] = start
+        columns["n_fit"][start:stop] = in_fit
     frame = pd.DataFrame(columns)
     if cluster is not None:
         frame["cluster"] = np.asarray(cluster)[order]
-    scored = int(first[min_events]) if k_total > min_events else n
+    scored = int(first[first_scored]) if first_scored < k_total else n
     return frame.iloc[scored:].reset_index(drop=True)
 
 

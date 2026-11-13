@@ -412,11 +412,14 @@ def p3_recalibration(ds: Dataset, settings: Settings = DEFAULT) -> dict[str, Any
     is the number of releases that still have a market). The skill is
     ``calibration.skill_interval`` of the walk-forward recalibration (``recal_min_releases``
     releases before the first prediction, refit every ``recal_refit_every`` releases) with
-    releases as clusters. Reported, not tested: the fitted ``(a, b)`` over time (``walk``, one
-    row per scored market, with the coefficients that scored it) and the skill by series (the
-    error message where a series has no defined skill). ``primary`` is None, with the reason in
-    ``error``, when a fit or the skill fails, and None without a reason when there are too few
-    releases for a first fit.
+    releases as clusters. The fit for a release uses only releases that took place before the
+    price time, ``recal_hours`` before it (``gap_hours`` of the walk-forward): a release between
+    the price time and the release itself is not in the fit, because its outcome was not known
+    when the price was observed (docs/protocol.md, P3). Reported, not tested: the fitted
+    ``(a, b)`` over time (``walk``, one row per scored market, with the coefficients that scored
+    it) and the skill by series (the error message where a series has no defined skill).
+    ``primary`` is None, with the reason in ``error``, when a fit or the skill fails, and None
+    without a reason when there are too few releases for a first fit.
     """
     release_ts = ds.events.set_index("event")["release_ts"]
     rows = []
@@ -448,7 +451,10 @@ def p3_recalibration(ds: Dataset, settings: Settings = DEFAULT) -> dict[str, Any
             usable["price"].to_numpy(), usable["outcome"].to_numpy(),
             usable["release_ts"].to_numpy(), min_events=settings.recal_min_releases,
             refit_every=settings.recal_refit_every, cluster=usable["event"].to_numpy(),
+            gap_hours=settings.recal_hours,
         )
+        if walk.empty:  # releases so close together that none has enough earlier ones at its price
+            return out
         primary = skill_interval(
             walk, walk["cluster"], B=settings.n_boot, seed=settings.seed, level=settings.level
         )

@@ -439,17 +439,20 @@ def test_refit_every_counts_releases_and_not_observations():
 
 
 # --------------------------------------------------------- walk-forward: independent plain loop
-def slow_walk_forward(price, outcome, ts, min_events, refit_every):
+def slow_walk_forward(price, outcome, ts, min_events, refit_every, gap_hours=0.0):
     """The rule of the docstring one release at a time with plain loops: walk through the sorted
-    distinct release times; at the first scored release and whenever ``refit_every`` releases have
-    passed since the last fit, fit on all rows strictly before the release."""
+    distinct release times; a release is scored when at least ``min_events`` releases lie strictly
+    before its price time (``gap_hours`` earlier); at the first scored release and whenever
+    ``refit_every`` releases have passed since the last fit, fit on all rows strictly before the
+    price time of the release."""
     releases = sorted(set(ts.tolist()))
+    gap = 3600.0 * gap_hours
     rows, last_fit, coef, n_fit = [], None, None, None
     for k, T in enumerate(releases):
-        if k < min_events:
+        if sum(1 for r in releases if r < T - gap) < min_events:
             continue
         if last_fit is None or k - last_fit >= refit_every:
-            earlier = ts < T
+            earlier = ts < T - gap
             coef = fit_recalibration(price[earlier], outcome[earlier])
             last_fit, n_fit = k, int(earlier.sum())
         for i in np.flatnonzero(ts == T):
@@ -483,6 +486,91 @@ def test_walk_forward_equals_a_plain_loop(min_events, refit_every, markets):
     assert got["release_ts"].is_monotonic_increasing
     # the fit used for a row never contains an observation of its own release or a later one
     assert (got["n_fit"] <= np.searchsorted(np.sort(ts), got["release_ts"], side="left")).all()
+
+
+@pytest.mark.parametrize("gap_hours, markets", [(12.0, 2), (24.0, 2), (30.0, 3), (80.0, 1)])
+def test_walk_forward_with_a_gap_equals_a_plain_loop(gap_hours, markets):
+    """Daily releases. A gap of 12 hours changes nothing; 30 hours leaves out the release of the day
+    before, 80 hours the three before it; a gap of exactly 24 hours leaves out the release of the
+    day before too, because a release at the price time is not before it."""
+    price, outcome, ts = random_panel(np.random.default_rng(42), 60, markets)
+    got = walk_forward_recalibration(price, outcome, ts, min_events=15, refit_every=4,
+                                     gap_hours=gap_hours)
+    want = slow_walk_forward(price, outcome, ts, 15, 4, gap_hours)
+    assert len(got) == len(want) > 0
+    pd.testing.assert_frame_equal(got, want, check_dtype=False, check_exact=False, atol=1e-9,
+                                  rtol=0)
+    # no fit holds an observation at or after the price time of the first release of its block
+    price_time = got["release_ts"] - 3600.0 * gap_hours
+    assert (got["n_fit"] <= np.searchsorted(np.sort(ts), price_time, side="left")).all()
+    plain = walk_forward_recalibration(price, outcome, ts, min_events=15, refit_every=4)
+    if gap_hours < 24.0:
+        pd.testing.assert_frame_equal(got, plain)
+    else:  # the first scored release comes later
+        assert got["release_ts"].min() > plain["release_ts"].min()
+
+
+def test_walk_forward_by_hand_with_a_gap():
+    """Releases 1000 s apart and a gap of half an hour (1800 s), so the fit for the release at T
+    holds the releases at least 2000 s before it. With ``min_events = 3`` the first scored release
+    is the 5th (the first three lie before its price time, the 4th is inside the gap); the next
+    fit is at the 7th release and holds releases 1 to 5."""
+    price, outcome, release_ts = hand_data()
+    got = walk_forward_recalibration(price, outcome, release_ts, min_events=3, refit_every=2,
+                                     gap_hours=0.5)
+    assert list(got.columns) == COLUMNS and len(got) == 16
+    assert got["release_ts"].tolist() == [1000.0 * k for k in (5, 6, 7, 8) for _ in range(4)]
+    for block, (a, b, n_fit) in zip([range(0, 8), range(8, 16)], HAND_FITS[:2], strict=True):
+        rows = got.iloc[list(block)]
+        assert (rows["n_fit"] == n_fit).all()
+        np.testing.assert_allclose(rows["a"], a, atol=1e-9)
+        np.testing.assert_allclose(rows["b"], b, atol=1e-9)
+    plain = walk_forward_recalibration(price, outcome, release_ts, min_events=3, refit_every=2)
+    for release, with_gap, without in ((6000.0, 12, 20), (8000.0, 20, 28)):
+        assert got.loc[got["release_ts"] == release, "n_fit"].tolist() == [with_gap] * 4
+        assert plain.loc[plain["release_ts"] == release, "n_fit"].tolist() == [without] * 4
+
+
+def test_no_release_is_scored_when_the_gap_leaves_too_few_releases_before_every_price_time():
+    price, outcome, release_ts = hand_data()  # eight releases, 1000 s apart
+    for min_events in (1, 3):  # 7200 s: the price time of the 8th release is 800, before them all
+        got = walk_forward_recalibration(price, outcome, release_ts, min_events=min_events,
+                                         refit_every=2, gap_hours=2.0)
+        assert len(got) == 0 and list(got.columns) == COLUMNS
+    some = walk_forward_recalibration(price, outcome, release_ts, min_events=3, refit_every=2,
+                                      gap_hours=1.0)  # 3600 s: before 7000 - 3600 = 3400 lie three
+    assert some["release_ts"].tolist() == [7000.0] * 4 + [8000.0] * 4
+    assert some["n_fit"].tolist() == [12] * 8
+
+
+def test_an_outcome_inside_the_gap_does_not_enter_the_fit():
+    """Daily releases and a gap of 30 hours: the outcome of the release of the day before the start
+    of a block was not known at the price time of that block. Flip it: the block does not change.
+    With a gap of 12 hours the same flip changes the block (the test has power), and a later block
+    does see the flip in both runs."""
+    price, outcome, ts = random_panel(np.random.default_rng(43), 60, 3)
+    releases = np.unique(ts)
+    flipped = outcome.copy()
+    flipped[ts == releases[24]] = 1 - flipped[ts == releases[24]]
+
+    def block(frame, first, last):
+        inside = (frame["release_ts"] >= releases[first]) & (frame["release_ts"] <= releases[last])
+        return frame[inside]
+
+    # min_events is 19 with the gap of 30 hours, so that both runs have blocks from release 20
+    for gap, min_events, leaks in ((30.0, 19, False), (12.0, 20, True)):
+        base = walk_forward_recalibration(price, outcome, ts, min_events=min_events, refit_every=5,
+                                          gap_hours=gap)
+        changed = walk_forward_recalibration(price, flipped, ts, min_events=min_events,
+                                             refit_every=5, gap_hours=gap)
+        assert block(base, 20, 24)["a"].nunique() == 1  # the block of releases 20 to 24
+        same = block(changed, 25, 29)[["a", "b", "recal", "n_fit"]].reset_index(drop=True)
+        was = block(base, 25, 29)[["a", "b", "recal", "n_fit"]].reset_index(drop=True)
+        if leaks:
+            assert not np.allclose(same["a"], was["a"]) and not np.allclose(same["b"], was["b"])
+        else:
+            pd.testing.assert_frame_equal(same, was, check_exact=True)
+        assert not np.allclose(block(changed, 30, 34)["a"], block(base, 30, 34)["a"])
 
 
 def test_the_default_schedule_is_fifty_releases_then_a_refit_every_ten():
@@ -583,6 +671,9 @@ def test_walk_forward_refuses_bad_arguments():
             walk_forward_recalibration(price, outcome, ts, min_events=bad)
         with pytest.raises(ValueError, match="refit_every"):
             walk_forward_recalibration(price, outcome, ts, refit_every=bad)
+    for bad in (-1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="gap_hours"):
+            walk_forward_recalibration(price, outcome, ts, min_events=12, gap_hours=bad)
     with pytest.raises(ValueError, match="release_ts"):
         walk_forward_recalibration(price, outcome, ts[:-1], min_events=12)
     with pytest.raises(ValueError, match="release_ts"):

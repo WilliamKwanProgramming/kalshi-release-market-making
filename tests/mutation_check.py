@@ -142,14 +142,14 @@ mutant("calibration: no clip at the top of the price", CAL, "calibration.py",
 mutant("calibration: the fit uses the unclipped price", CAL, "calibration.py",
        "x = _clipped_logit(p, clip)", "x = logit(p)")
 mutant("calibration: expanding window starts one release late", CAL, "calibration.py",
-       "for k in range(min_events, k_total, refit_every):",
-       "for k in range(min_events + 1, k_total, refit_every):")
+       "for k in range(first_scored, k_total, refit_every):",
+       "for k in range(first_scored + 1, k_total, refit_every):")
 mutant("calibration: the release itself is in its fit", CAL, "calibration.py",
-       "a, b = fit_recalibration(p[:start], y[:start])",
+       "a, b = fit_recalibration(p[:in_fit], y[:in_fit])",
        "a, b = fit_recalibration(p[:stop], y[:stop])")
 mutant("calibration: one row of the release in its fit", CAL, "calibration.py",
-       "a, b = fit_recalibration(p[:start], y[:start])",
-       "a, b = fit_recalibration(p[: start + 1], y[: start + 1])")
+       "a, b = fit_recalibration(p[:in_fit], y[:in_fit])",
+       "a, b = fit_recalibration(p[: in_fit + 1], y[: in_fit + 1])")
 mutant("calibration: refit block one release short", CAL, "calibration.py",
        "stop = int(first[k + refit_every]) if k + refit_every < k_total else n",
        "stop = int(first[k + refit_every - 1]) if k + refit_every < k_total else n")
@@ -712,8 +712,8 @@ mutant("calibration: refit every off by one", CAL, "calibration.py",
        'stop = int(first[k + refit_every]) if k + refit_every < k_total else n',
        'stop = int(first[k + refit_every - 1]) if k + refit_every - 1 < k_total else n')
 mutant("calibration: refit every range step", CAL, "calibration.py",
-       'for k in range(min_events, k_total, refit_every):',
-       'for k in range(min_events, k_total, refit_every + 1):')
+       'for k in range(first_scored, k_total, refit_every):',
+       'for k in range(first_scored, k_total, refit_every + 1):')
 mutant("calibration: rows not releases", CAL, "calibration.py",
        'releases, first = np.unique(ts, return_index=True)',
        'releases, first = np.arange(n, dtype=float), np.arange(n)')
@@ -733,20 +733,51 @@ mutant("calibration: cluster codes unsorted", CAL, "calibration.py",
        'codes, uniques = pd.factorize(arr, sort=True)',
        'codes, uniques = pd.factorize(arr)')
 mutant("calibration: n fit wrong", CAL, "calibration.py",
-       'columns["n_fit"][start:stop] = start',
+       'columns["n_fit"][start:stop] = in_fit',
        'columns["n_fit"][start:stop] = stop')
 mutant("calibration: min obs constant", CAL, "calibration.py",
        'MIN_OBSERVATIONS = 10',
        'MIN_OBSERVATIONS = 5')
 mutant("calibration: scored cut wrong", CAL, "calibration.py",
-       'scored = int(first[min_events]) if k_total > min_events else n',
-       'scored = int(first[min_events]) + 1 if k_total > min_events else n')
+       'scored = int(first[first_scored]) if first_scored < k_total else n',
+       'scored = int(first[first_scored]) + 1 if first_scored < k_total else n')
 mutant("calibration: skill ignores seed", CAL, "calibration.py",
        'np.random.default_rng(seed))',
        'np.random.default_rng(0))')
 mutant("calibration: level ignored", CAL, "calibration.py",
        '"ci": percentile_interval(boot, level),',
        '"ci": percentile_interval(boot, 0.95),')
+# the fit leaves out the releases inside the gap (the look-ahead of review item K2)
+mutant("calibration: the gap is not applied to the price time", CAL, "calibration.py",
+       "price_time = releases - 3600.0 * float(gap_hours)", "price_time = releases")
+mutant("calibration: the gap is read as seconds", CAL, "calibration.py",
+       "price_time = releases - 3600.0 * float(gap_hours)",
+       "price_time = releases - float(gap_hours)")
+mutant("calibration: the gap has the wrong sign", CAL, "calibration.py",
+       "price_time = releases - 3600.0 * float(gap_hours)",
+       "price_time = releases + 3600.0 * float(gap_hours)")
+mutant("calibration: a release at the price time is in the fit", CAL, "calibration.py",
+       "in_fit = int(np.searchsorted(ts, price_time[k], side=\"left\"))",
+       "in_fit = int(np.searchsorted(ts, price_time[k], side=\"right\"))")
+mutant("calibration: a release at the price time counts as known", CAL, "calibration.py",
+       "known = np.searchsorted(releases, price_time, side=\"left\")",
+       "known = np.searchsorted(releases, price_time, side=\"right\")")
+mutant("calibration: first scored release needs one more", CAL, "calibration.py",
+       "eligible = np.flatnonzero(known >= min_events)",
+       "eligible = np.flatnonzero(known > min_events)")
+mutant("calibration: first scored release is the last eligible one", CAL, "calibration.py",
+       "first_scored = int(eligible[0]) if eligible.size else k_total",
+       "first_scored = int(eligible[-1]) if eligible.size else k_total")
+mutant("calibration: a negative gap is accepted", CAL, "calibration.py",
+       "if not (np.isfinite(gap_hours) and gap_hours >= 0.0):",
+       "if not (np.isfinite(gap_hours) and gap_hours >= -1.0):")
+mutant("calibration: an infinite gap is accepted", CAL, "calibration.py",
+       "if not (np.isfinite(gap_hours) and gap_hours >= 0.0):",
+       "if not (gap_hours >= 0.0):")
+mutant("protocol: the recalibration fit ignores the gap before the release", PROTO,
+       "protocol.py", "gap_hours=settings.recal_hours,", "gap_hours=0.0,")
+mutant("protocol: no scored release is reported as a failed skill", PROTO, "protocol.py",
+       "if walk.empty:", "if False:")
 
 
 # ---- the scripts that paste the tables into the README and check the numbers there
