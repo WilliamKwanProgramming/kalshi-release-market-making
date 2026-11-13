@@ -22,12 +22,14 @@ loading: [docs/data.md](docs/data.md).
 
 ## Layout
 
-    src/kalshi_mm/              the library: world, tape, markout, quoting, backtest, calibration, stats,
-                                protocol (the three tests), panel and ingest (data loading), kalshi_api
-    src/kalshi_mm/experiments/  one module per results directory (recovery, backtest_study, calibration_study, rehearsal)
-    tests/                      unit, property, end-to-end and look-ahead tests; mutation_check.py
-    scripts/                    reproduce.sh, make_tables.py, check_readme_numbers.py, fetch_kalshi.py, run_real.py
-    results/                    outputs of the synthetic runs, each with its manifest (seed, commit, versions)
+* `src/kalshi_mm/`: the library (world, tape, markout, quoting, backtest, calibration, stats, the
+  three protocol tests, the loader and the Kalshi API client).
+* `src/kalshi_mm/experiments/`: one module per results directory (`recovery`, `backtest_study`,
+  `calibration_study`, `rehearsal`).
+* `tests/`: unit, property, end-to-end and look-ahead tests, and `mutation_check.py`.
+* `scripts/`: `reproduce.sh`, `make_tables.py`, `check_readme_numbers.py`, `fetch_kalshi.py` and
+  `run_real.py`.
+* `results/`: the outputs of the synthetic runs, each with a manifest (seed, commit, versions).
 
 ## Results
 
@@ -289,10 +291,13 @@ CPU time); every results directory also has its own manifest. Nothing in `result
 hand, and CI fails if a table in this README differs from `results/*/tables.md`.
 
 The real-data run is a separate, one-time procedure with its own checks
-([docs/protocol.md](docs/protocol.md), [docs/data.md](docs/data.md)):
+([docs/protocol.md](docs/protocol.md), [docs/data.md](docs/data.md)). It needs a release calendar
+that has been checked by hand against the official calendars, and Kalshi's Developer Agreement may
+restrict storing data from its API ([docs/data.md](docs/data.md) quotes it): read it first.
 
-    python3 scripts/fetch_kalshi.py ...        # public API to data/kalshi.sqlite (git-ignored)
-    git tag real-run                           # before the data are fetched; the code must not change
+    git tag real-run && git push origin real-run   # before any data are fetched; freezes the code
+    python3 scripts/fetch_kalshi.py --dry-run      # lists what would be fetched, requests no trade
+    python3 scripts/fetch_kalshi.py                # public API to data/kalshi.sqlite (git-ignored)
     python3 scripts/run_real.py --db data/kalshi.sqlite
 
 ## Method (short)
