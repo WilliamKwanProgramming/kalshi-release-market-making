@@ -27,7 +27,8 @@ the range checks, and :func:`write_dataset` converts every value to a Python ``i
 :func:`trade_panel_sql` builds the markout panel of docs/model.md section 5 inside the database:
 the mid proxy of section 4 before and after each trade, and the four markouts. It is the same
 computation as ``kalshi_mm.markout.trade_markouts``, written as one SQL statement
-(:data:`PANEL_SQL`) for datasets with millions of trades; the tests compare the two exactly.
+(:data:`PANEL_SQL`), so that the panel is built without a loop in Python and without loading the
+tape first; the tests compare the two exactly.
 """
 
 from __future__ import annotations
