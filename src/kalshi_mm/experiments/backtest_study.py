@@ -40,12 +40,17 @@ shows the primary and the secondary difference (``release_aware`` minus ``pooled
 premiums at the end of each dataset. Table B9 (exploratory) is the level sweep: in the planted world
 of the main grid, ``release_aware`` minus ``flat_matched`` when the flat premium is multiplied by a
 scale F in {0.5, 0.75, 1, 1.25, 1.5, 1.75, 2} (``QuoteParams.flat_scale``); F = 1 is the primary
-comparison.
+comparison. Table B10 (exploratory) was added after a second independent review showed that
+``flat_matched`` is matched to ``release_aware`` on the average of the premium over the clock and
+not at the fills, where ``release_aware`` quotes more premium: B2 reports the premium at the fills
+of every policy, and B10 repeats the primary comparison in both worlds with the flat premium scaled
+by ``F_eq`` so that the two quote the same premium at their fills.
 
 Writes ``per_event.csv``, ``policies.csv``, ``pairs.csv``, ``events_needed.csv``,
 ``premium_check.csv``, ``windows.csv``, ``per_event_windows.csv``, ``levels.csv``,
-``summary.json``, ``tables.md`` and ``backtest_study.manifest.txt``. The latent columns of the
-world are read only by the premium check; the backtest gets a tape without them.
+``fill_matched.csv``, ``summary.json``, ``tables.md`` and ``backtest_study.manifest.txt``. The
+latent columns of the world are read only by the premium check; the backtest gets a tape without
+them.
 """
 
 from __future__ import annotations
@@ -62,7 +67,7 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from kalshi_mm.backtest import walk_forward
+from kalshi_mm.backtest import mean_fill_premium, walk_forward
 from kalshi_mm.experiments.common import Manifest
 from kalshi_mm.markout import BUCKET_LABELS, trade_markouts
 from kalshi_mm.quoting import (
@@ -110,7 +115,9 @@ WINDOW_PREMIUMS = ("premium_pooled", "premium_matched", "premium_near", "premium
 SECONDARY_COLUMNS = ("secondary_mean", "secondary_lo", "secondary_hi")  # the secondary in B8
 
 # the first key of a bootstrap generator, default_rng([SEED, KIND, ...]), names the analysis
-KIND_MAIN, KIND_SWEEP, KIND_TOUCH, KIND_EVENTS, KIND_WINDOW, KIND_LEVEL = 1, 2, 3, 4, 5, 6
+KIND_MAIN, KIND_SWEEP, KIND_TOUCH, KIND_EVENTS, KIND_WINDOW, KIND_LEVEL, KIND_FILLS = (
+    1, 2, 3, 4, 5, 6, 7
+)
 # the extra element of the generator of the secondary difference of B8
 SECONDARY_KEY = 1
 
@@ -167,9 +174,12 @@ def run_dataset(
 def event_table(rows: pd.DataFrame) -> pd.DataFrame:
     """One row per event and policy: the sums over the event's markets (the share of live
     intervals and the mean quoted spread are their means; a market without a quote on both sides
-    has no spread and is left out of that mean)."""
-    return (
-        rows.groupby(["event", "policy"], sort=False)
+    has no spread and is left out of that mean). ``fill_premium`` is the mean over the contracts
+    filled in the event of the premium per unit of ``4 m (1 - m)`` of the filled quotes (NaN when
+    nothing was filled)."""
+    weighted = rows.assign(premium_filled=rows["fill_premium"].fillna(0.0) * rows["contracts"])
+    table = (
+        weighted.groupby(["event", "policy"], sort=False)
         .agg(
             pnl=("pnl", "sum"),
             gross=("gross", "sum"),
@@ -180,11 +190,18 @@ def event_table(rows: pd.DataFrame) -> pd.DataFrame:
             marked_pnl=("marked_pnl", "sum"),
             quotes_live_share=("quotes_live_share", "mean"),
             mean_spread=("mean_spread", "mean"),
+            premium_filled=("premium_filled", "sum"),
             evaluated=("evaluated", "first"),
             release_ts=("release_ts", "first"),
         )
         .reset_index()
     )
+    contracts = table["contracts"].to_numpy(dtype=float)
+    filled = contracts > 0.0
+    fill_premium = np.full(len(table), math.nan)
+    fill_premium[filled] = table["premium_filled"].to_numpy(dtype=float)[filled] / contracts[filled]
+    table.insert(table.columns.get_loc("mean_spread") + 1, "fill_premium", fill_premium)
+    return table.drop(columns="premium_filled")
 
 
 def evaluated_pnl(events: pd.DataFrame) -> pd.DataFrame:
@@ -217,8 +234,11 @@ def mean_difference(d: NDArray[np.float64], weights: NDArray[np.int64]) -> dict[
 
 def policy_summary(events: pd.DataFrame, policy: str) -> dict[str, float]:
     """Means per evaluated event of one policy; ``cents_per_contract`` is the net P&L of all
-    evaluated events over all contracts filled, in cents, and ``spread`` the mean quoted spread
-    (ask minus bid, USD per contract) of the events that had a quote on both sides."""
+    evaluated events over all contracts filled, in cents, ``spread`` the mean quoted spread
+    (ask minus bid, USD per contract) of the events that had a quote on both sides and
+    ``fill_premium`` the premium per unit of ``4 m (1 - m)`` at the fills (USD per contract) over
+    all the contracts the policy filled in the evaluated events
+    (:func:`kalshi_mm.backtest.mean_fill_premium`)."""
     done = events[(events["policy"] == policy) & events["evaluated"]]
     contracts = float(done["contracts"].sum())
     cents = 100.0 * float(done["pnl"].sum()) / contracts if contracts > 0.0 else math.nan
@@ -233,6 +253,7 @@ def policy_summary(events: pd.DataFrame, policy: str) -> dict[str, float]:
         "marked_pnl": float(done["marked_pnl"].mean()),
         "live_share": float(done["quotes_live_share"].mean()),
         "spread": float(done["mean_spread"].mean()),
+        "fill_premium": mean_fill_premium(done),
     }
 
 
@@ -495,6 +516,50 @@ def level_runs(config: StudyConfig) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
+def fill_matched_runs(config: StudyConfig) -> pd.DataFrame:
+    """The exploratory comparison at an equal premium at the fills (B10): both worlds of the main
+    grid, every dataset seed.
+
+    ``release_aware`` and ``flat_matched`` are run once. ``F_eq`` is the premium per unit of
+    ``4 m (1 - m)`` at the fills of ``release_aware`` divided by that of ``flat_matched``
+    (:func:`kalshi_mm.backtest.mean_fill_premium` over the evaluated events), and ``flat_matched``
+    is run again with its flat premium multiplied by ``F_eq`` (``QuoteParams.flat_scale``, which is
+    ``F_eq`` times the scale of ``config.quote``). ``F_eq`` is estimated from the same run, so the
+    interval below treats it as given. Returns one record per world and dataset: ``flat_scale`` (the
+    scale of the second run), the mean of the per-event difference ``release_aware`` minus
+    ``flat_matched`` at that scale over the evaluated events with the percentile interval of a
+    cluster bootstrap (counts of ``default_rng([SEED, KIND_FILLS, index of the world, seed])``), and
+    the premiums at the fills, in USD per contract per unit of ``4 m (1 - m)``, of ``release_aware``
+    (``fill_aware``), of ``flat_matched`` in the first run (``fill_flat_base``) and of
+    ``flat_matched`` in the second (``fill_flat``). A dataset in which either policy has no premium
+    at its fills has nothing to match and raises ``ValueError``."""
+    aware, flat = PRIMARY
+    records = []
+    for w, (name, pi1) in enumerate(config.worlds()):
+        params = replace(config.world, pi1=pi1)
+        for seed in config.seeds:
+            world = generate_world(params, seed)
+            first = event_table(walk_world(world, (aware, flat), config.quote))
+            done = first[first["evaluated"]]
+            fill_aware = mean_fill_premium(done[done["policy"] == aware])
+            fill_base = mean_fill_premium(done[done["policy"] == flat])
+            if not (fill_aware > 0.0 and fill_base > 0.0):  # NaN fails both
+                raise ValueError(f"no premium at the fills to match in the {name} dataset {seed}")
+            scale = config.quote.flat_scale * fill_aware / fill_base
+            quote = replace(config.quote, flat_scale=scale)
+            second = event_table(walk_world(world, (flat,), quote))
+            d = primary_differences(pd.concat([first[first["policy"] == aware], second],
+                                              ignore_index=True))
+            weights = cluster_weights(d.size, config.boot_reps, boot_rng(KIND_FILLS, w, seed))
+            records.append({
+                "world": name, "seed": seed, "n_events": int(d.size), "flat_scale": scale,
+                **mean_difference(d, weights),
+                "fill_aware": fill_aware, "fill_flat_base": fill_base,
+                "fill_flat": mean_fill_premium(second[second["evaluated"]]),
+            })
+    return pd.DataFrame(records)
+
+
 # ---------------------------------------------------------------------------------- summaries
 def _clean(obj: Any) -> Any:
     """JSON-ready copy: numpy scalars as Python numbers, NaN and infinity as null."""
@@ -557,6 +622,26 @@ def level_summary(levels: pd.DataFrame) -> list[dict[str, float]]:
     return out
 
 
+def fill_matched_summary(fills: pd.DataFrame) -> dict[str, dict[str, float]]:
+    """One entry per world of :func:`fill_matched_runs`, in the order of the rows:
+    :func:`across_datasets` of ``release_aware`` minus ``flat_matched`` at ``F_eq``, the mean and
+    the range over the datasets of the scale ``F_eq`` (``flat_scale``, ``flat_scale_min``,
+    ``flat_scale_max``) and the mean over the datasets of the three premiums at the fills
+    (``fill_aware``, ``fill_flat_base``, ``fill_flat``)."""
+    out = {}
+    for world, part in fills.groupby("world", sort=False):
+        out[str(world)] = {
+            **across_datasets(part),
+            "flat_scale": float(part["flat_scale"].mean()),
+            "flat_scale_min": float(part["flat_scale"].min()),
+            "flat_scale_max": float(part["flat_scale"].max()),
+            "fill_aware": float(part["fill_aware"].mean()),
+            "fill_flat_base": float(part["fill_flat_base"].mean()),
+            "fill_flat": float(part["fill_flat"].mean()),
+        }
+    return out
+
+
 def sign_changes(
     scales: Sequence[float], means: Sequence[float]
 ) -> list[tuple[float, float, float]]:
@@ -608,7 +693,7 @@ def sample_size(per_event: pd.DataFrame) -> dict[str, float]:
 def _policy_means(policies: pd.DataFrame, world: str) -> dict[str, dict[str, float]]:
     """Mean over the datasets of a world of every policy summary column, by policy."""
     columns = ("pnl", "gross", "fees", "fills", "contracts", "cents_per_contract", "marked_pnl",
-               "live_share", "spread")
+               "live_share", "spread", "fill_premium")
     out = {}
     main = policies[(policies["sweep"] == "main") & (policies["world"] == world)]
     for policy in POLICIES:
@@ -649,9 +734,11 @@ def build_summary(
     check: pd.DataFrame,
     windows: pd.DataFrame,
     levels: pd.DataFrame,
+    fills: pd.DataFrame,
 ) -> dict[str, Any]:
     """Everything the tables quote, by name (``policies`` and ``pairs`` hold the main grid and
-    the sweeps; ``windows`` the records of B8 and ``levels`` those of B9)."""
+    the sweeps; ``windows`` the records of B8, ``levels`` those of B9 and ``fills`` those of
+    B10)."""
     main = pairs[pairs["sweep"] == "main"]
     summary: dict[str, Any] = {
         "design": {
@@ -675,6 +762,7 @@ def build_summary(
         "premium_check": {},
         "windows": window_summary(windows),
         "levels": level_summary(levels),
+        "fill_matched": fill_matched_summary(fills),
     }
     for world, _ in config.worlds():
         for a, b in PAIRS:
@@ -778,30 +866,32 @@ def table_primary(summary: dict[str, Any], config: StudyConfig) -> str:
     return _block(
         "B1", f"{_pair(*PRIMARY)}, net P&L per event",
         " ".join(sentences) + f" `{PRIMARY[1]}` quotes one flat premium equal to the average of "
-        f"the bucket premiums over the quoting window, so the difference is the effect of when a "
-        f"premium is applied and not of its average size (both premiums are per unit of "
-        f"4m(1 - m); the quoted spreads in USD also depend on the price, see B2). Intervals are "
-        f"percentile intervals of a cluster bootstrap over events with {config.boot_reps:,} "
-        f"replications.", table,
+        f"the bucket premiums over the clock of the quoting window (both premiums are per unit of "
+        f"4m(1 - m); the quoted spreads in USD also depend on the price, see B2). That is the "
+        f"same premium averaged over the clock and not the same premium where the quotes are "
+        f"hit: B2 gives the premium at the fills of each policy and B10 repeats the comparison at "
+        f"an equal premium at the fills. Intervals are percentile intervals of a cluster "
+        f"bootstrap over events with {config.boot_reps:,} replications.", table,
         "whether the planted informed share is what makes the bucket premiums useful: the null "
-        "world's buckets also differ, because of the trade-rate surge and the price level; and "
-        "whether either policy earns or loses money on real Kalshi markets: the tape, the fill "
-        "rule and the quote parameters are assumptions.",
+        "world's buckets also differ, because of the trade-rate surge and the price level; "
+        "whether the difference comes from when the premium is applied or from the larger "
+        "premium that `release_aware` has at its fills (B10); and whether either policy earns or "
+        "loses money on real Kalshi markets: the tape, the fill rule and the quote parameters "
+        "are assumptions.",
     )
 
 
-def _spread_sentences(summary: dict[str, Any], config: StudyConfig) -> str:
-    """The mean quoted spread, in cents, of the three premium policies in each world."""
+def _policy_sentences(summary: dict[str, Any], config: StudyConfig, key: str, what: str) -> str:
+    """The value ``key`` of the policy summaries, in cents, of the three premium policies in each
+    world, as one sentence per world that starts ``In the <world> world <what>, in cents, is``."""
     sentences = []
     for world, _ in config.worlds():
-        spreads = {
-            policy: 100.0 * summary["policies"][f"{world}:{policy}"]["spread"]
+        values = {
+            policy: 100.0 * summary["policies"][f"{world}:{policy}"][key]
             for policy in ("release_aware", "flat_matched", "pooled_premium")
         }
-        parts = ", ".join(f"`{policy}` {_num(value)}" for policy, value in spreads.items())
-        sentences.append(
-            f"In the {_label(world)} world the mean quoted spread, in cents, is {parts}."
-        )
+        parts = ", ".join(f"`{policy}` {_num(value)}" for policy, value in values.items())
+        sentences.append(f"In the {_label(world)} world {what}, in cents, is {parts}.")
     return " ".join(sentences)
 
 
@@ -816,7 +906,7 @@ def table_policies(summary: dict[str, Any], config: StudyConfig) -> str:
                 _label(world), f"`{policy}`", f"{_num(s['pnl'])} ({_num(s['pnl_mc_se'])})",
                 _num(s["fees"]), _num(s["fills"], 1), _num(s["contracts"], 1),
                 _num(s["cents_per_contract"]), _num(s["marked_pnl"]), _num(s["live_share"], 3),
-                _num(100.0 * s["spread"]),
+                _num(100.0 * s["spread"]), _num(100.0 * s["fill_premium"]),
             ])
     losing = sum(1 for value, _, _ in cells if value < 0.0)
     best, worst = max(cells), min(cells)
@@ -824,20 +914,25 @@ def table_policies(summary: dict[str, Any], config: StudyConfig) -> str:
         f"Net P&L per event is negative in {losing} of {len(cells)} world and policy cells; the "
         f"highest is `{best[2]}` in the {_label(best[1])} world ({_num(best[0], signed=True)} "
         f"USD) and the lowest `{worst[2]}` in the {_label(worst[1])} world "
-        f"({_num(worst[0], signed=True)} USD). " + _spread_sentences(summary, config)
+        f"({_num(worst[0], signed=True)} USD). "
+        + _policy_sentences(summary, config, "spread", "the mean quoted spread") + " "
+        + _policy_sentences(
+            summary, config, "fill_premium",
+            "the premium per unit of 4m(1 - m) at the fills, over the contracts filled")
     )
     table = _markdown(
         ["World", "Policy", "Net P&L per event, USD (MC SE over datasets)", "Fees per event, USD",
          "Fills per event", "Contracts per event", "Net cents per contract",
          "Marked P&L per event, USD", "Share of intervals with a quote",
-         "Mean quoted spread, cents"],
+         "Mean quoted spread, cents", "Premium at the fills, cents per unit of 4m(1 - m)"],
         body,
     )
     return _block(
         "B2", "The five policies, means over the datasets of each world", reading, table,
-        "which part of a loss is adverse selection: the table has no fill-level decomposition; "
-        "the spread is that of the quotes posted, ask minus bid at the refreshes with both sides "
-        "quoted, not the width at which fills happened.",
+        "which part of a loss is adverse selection: the table has no decomposition of the "
+        "losses; the spread is that of the quotes posted, ask minus bid at the refreshes with "
+        "both sides quoted, not the width at which fills happened; and the premium at the fills "
+        "is per unit of 4m(1 - m), so in USD it also depends on the price.",
     )
 
 
@@ -1100,9 +1195,9 @@ def table_windows(summary: dict[str, Any], config: StudyConfig) -> str:
     return _block(
         "B8", f"Exploratory: {_pair(*PRIMARY)} and {_pair(*SECONDARY)} by hours of trading before "
         "each release, planted world", reading, table,
-        "whether either difference follows the level of the premium only (B9 is the test of "
-        "that), and anything about real markets: the hours of trading are those of the synthetic "
-        "world.",
+        "what either difference is made of: B9 and B10 change the level of the flat premium and "
+        "describe what happens, they do not test it; and anything about real markets: the hours "
+        "of trading are those of the synthetic world.",
     )
 
 
@@ -1162,6 +1257,8 @@ def table_levels(summary: dict[str, Any], config: StudyConfig) -> str:
     else:
         sentences.append(f"Net P&L per event is negative for {losing} of {len(POLICIES)} policies "
                          f"in the planted world (B2).")
+    sentences.append("B10 gives the scale at which the two policies quote the same premium at "
+                     "their fills.")
     sentences.append(f"Intervals are percentile intervals of a cluster bootstrap over events with "
                      f"{config.boot_reps:,} replications.")
     table = _markdown(
@@ -1179,6 +1276,57 @@ def table_levels(summary: dict[str, Any], config: StudyConfig) -> str:
     )
 
 
+def table_fill_matched(summary: dict[str, Any], config: StudyConfig) -> str:
+    """B10, exploratory: the primary difference in both worlds when ``flat_matched`` quotes, at its
+    fills, the same premium as ``release_aware`` (the flat premium scaled by ``F_eq``)."""
+    body, sentences = [], []
+    for world, _ in config.worlds():
+        s = summary["fill_matched"][world]
+        n = s["n_datasets"]
+        aware, base, flat = (100.0 * s[k] for k in ("fill_aware", "fill_flat_base", "fill_flat"))
+        body.append([
+            _label(world),
+            f"{_num(s['flat_scale'])} ({_num(s['flat_scale_min'])} to {_num(s['flat_scale_max'])})",
+            _num(aware), _num(base), _num(flat),
+            f"{_num(s['mean'], signed=True)} ({_num(s['mc_se'])})",
+            f"{_num(s['min'], signed=True)} to {_num(s['max'], signed=True)}",
+            str(s["below_zero"]), str(s["above_zero"]),
+        ])
+        sentences.append(
+            f"In the {_label(world)} world `{PRIMARY[0]}` quotes {_num(aware)} cents per unit of "
+            f"4m(1 - m) at its fills against {_num(base)} for `{PRIMARY[1]}` "
+            f"({_change(base, aware)}). With the flat premium scaled by F_eq = "
+            f"{_num(s['flat_scale'])} both quote about the same premium at their fills "
+            f"({_num(aware)} and {_num(flat)} cents) and {_earned(s['mean'])} (mean of {n} "
+            f"datasets; {_excluded(s['below_zero'], s['above_zero'], n)})."
+        )
+    table = _markdown(
+        ["World", "Scale F_eq of the flat premium, mean (range over datasets)",
+         f"Premium at the fills of `{PRIMARY[0]}`, cents", f"Premium at the fills of "
+         f"`{PRIMARY[1]}` at F = 1, cents",
+         f"Premium at the fills of `{PRIMARY[1]}` at F_eq, cents",
+         f"{_pair(*PRIMARY)} at F_eq: mean difference, USD per event (MC SE over datasets)",
+         "Range over datasets", "95% interval below zero", "95% interval above zero"],
+        body,
+    )
+    return _block(
+        "B10", f"Exploratory: {_pair(*PRIMARY)} at an equal premium at the fills",
+        "Exploratory: added after a second independent review showed that `" + PRIMARY[1]
+        + "` is matched to `" + PRIMARY[0] + "` on the average of the premium over the clock "
+        "and not where the quotes are hit (B1, B2). " + " ".join(sentences) + " F_eq is the "
+        f"premium per unit of 4m(1 - m) at the fills of `{PRIMARY[0]}` divided by that of "
+        f"`{PRIMARY[1]}`, from one run of each; `{PRIMARY[1]}` is then run again with its flat "
+        f"premium multiplied by F_eq. Intervals are percentile intervals of a cluster bootstrap "
+        f"over events with {config.boot_reps:,} replications.", table,
+        "which level is the right one to hold fixed: the average over the clock is fixed in "
+        "advance and is not what the P&L responds to, and the premium at the fills is what it "
+        "responds to but is partly an outcome of the schedule, because a policy is filled less "
+        "where it quotes more premium; that F_eq is known beforehand: it is estimated from the "
+        "same run as the difference, and the intervals treat it as given; and anything about "
+        "real markets.",
+    )
+
+
 def write_tables(summary: dict[str, Any], config: StudyConfig, check: pd.DataFrame) -> str:
     """The text of ``tables.md``."""
     return "\n".join([
@@ -1186,6 +1334,7 @@ def write_tables(summary: dict[str, Any], config: StudyConfig, check: pd.DataFra
         table_pairs(summary, config), table_sweep(summary, config), table_touch(summary, config),
         table_events_needed(summary, config), table_premium_check(check),
         table_windows(summary, config), table_levels(summary, config),
+        table_fill_matched(summary, config),
     ])
 
 
@@ -1200,15 +1349,17 @@ def run_study(config: StudyConfig, out: Path, manifest: Manifest) -> dict[str, A
     extra, extra_events = window_runs(config)
     windows = pd.concat([default_window_records(config, pairs, check), extra], ignore_index=True)
     levels = level_runs(config)
+    fills = fill_matched_runs(config)
     policies = pd.concat([policies, sweep_policies], ignore_index=True)
     pairs = pd.concat([pairs, sweep_pairs], ignore_index=True)
     summary = build_summary(
-        config, policies, pairs, needed, sample_size(per_event), check, windows, levels
+        config, policies, pairs, needed, sample_size(per_event), check, windows, levels, fills
     )
 
     csv = {"index": False, "float_format": "%.10g"}
     columns = ["world", "seed", "event", "policy", "pnl", "gross", "fees", "fills", "contracts",
-               "inventory_end", "marked_pnl", "quotes_live_share", "mean_spread", "evaluated"]
+               "inventory_end", "marked_pnl", "quotes_live_share", "mean_spread", "fill_premium",
+               "evaluated"]
     per_event[columns].to_csv(out / "per_event.csv", **csv)
     policies.to_csv(out / "policies.csv", **csv)
     pairs.to_csv(out / "pairs.csv", **csv)
@@ -1216,6 +1367,7 @@ def run_study(config: StudyConfig, out: Path, manifest: Manifest) -> dict[str, A
     check.to_csv(out / "premium_check.csv", **csv)
     windows.to_csv(out / "windows.csv", **csv)
     levels.to_csv(out / "levels.csv", **csv)
+    fills.to_csv(out / "fill_matched.csv", **csv)
     extra_events[["window_hours", "seed", "event", "policy", "pnl", "evaluated"]].to_csv(
         out / "per_event_windows.csv", **csv
     )
@@ -1241,11 +1393,17 @@ def run_study(config: StudyConfig, out: Path, manifest: Manifest) -> dict[str, A
         f"{{{', '.join(f'{f:g}' for f in config.sweep_levels)}}}, no other policy; the difference "
         f"{PRIMARY[0]} minus {PRIMARY[1]} per evaluated event with bootstrap generators "
         f"default_rng([{SEED}, {KIND_LEVEL}, index of F, seed])",
+        f"B10, added after a second independent review (exploratory): both worlds of the main "
+        f"grid, the same dataset seeds, {PRIMARY[0]} and {PRIMARY[1]} once, then {PRIMARY[1]} "
+        f"again with the flat premium multiplied by F_eq, the premium per unit of 4m(1 - m) at "
+        f"the fills of {PRIMARY[0]} over that of {PRIMARY[1]} in the first run; bootstrap "
+        f"generators default_rng([{SEED}, {KIND_FILLS}, index of the world, seed])",
     ]
     manifest.write(
         out, "backtest_study",
         ["per_event.csv", "policies.csv", "pairs.csv", "events_needed.csv", "premium_check.csv",
-         "windows.csv", "per_event_windows.csv", "levels.csv", "summary.json", "tables.md"],
+         "windows.csv", "per_event_windows.csv", "levels.csv", "fill_matched.csv", "summary.json",
+         "tables.md"],
         notes=f"{config.quote.min_history_events} burn-in events per dataset; sweeps on dataset "
               f"seed {config.sweep_seed}",
     )
@@ -1253,6 +1411,7 @@ def run_study(config: StudyConfig, out: Path, manifest: Manifest) -> dict[str, A
 
 
 def main(argv: list[str] | None = None) -> None:
+    """Run the study of the module docstring and write its files to ``--out``."""
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", type=Path, default=Path("results/backtest"))
     args = ap.parse_args(argv)

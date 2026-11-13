@@ -52,6 +52,7 @@ def make_events(pnl, evaluated=None):
             "marked_pnl": values,
             "quotes_live_share": 0.5,
             "mean_spread": 0.05,
+            "fill_premium": 0.05,
             "evaluated": evaluated,
             "release_ts": 1000.0 + 100.0 * np.arange(n),
         })
@@ -92,8 +93,8 @@ def test_the_exploratory_window_of_b8_is_30_hours_on_the_same_seeds():
     assert config.extra_windows == (30.0,) and config.world.window_hours == 12.0
     assert 30.0 != config.world.window_hours and config.planted_pi1 == 0.20
     kinds = (bs.KIND_MAIN, bs.KIND_SWEEP, bs.KIND_TOUCH, bs.KIND_EVENTS, bs.KIND_WINDOW,
-             bs.KIND_LEVEL)
-    assert kinds == (1, 2, 3, 4, 5, 6) and bs.SECONDARY_KEY == 1
+             bs.KIND_LEVEL, bs.KIND_FILLS)
+    assert kinds == (1, 2, 3, 4, 5, 6, 7) and bs.SECONDARY_KEY == 1
     assert bs.WINDOW_POLICIES == ("release_aware", "flat_matched", "pooled_premium")
     assert bs.WINDOW_PREMIUMS == ("premium_pooled", "premium_matched", "premium_near",
                                   "premium_far")
@@ -133,7 +134,7 @@ def test_event_table_sums_the_markets_of_an_event_and_averages_the_live_share():
         "pnl": [1.0, 2.0, 4.0], "gross": [1.5, 2.5, 4.5], "fees": [0.5, 0.5, 0.5],
         "fills": [3, 4, 5], "contracts": [30.0, 40.0, 50.0], "inventory_end": [5.0, -2.0, 1.0],
         "marked_pnl": [0.0, 1.0, 2.0], "quotes_live_share": [0.5, 1.0, 0.25],
-        "mean_spread": [0.06, 0.04, float("nan")],
+        "mean_spread": [0.06, 0.04, float("nan")], "fill_premium": [0.08, 0.10, 0.20],
         "evaluated": [True, True, False], "release_ts": [10.0, 10.0, 20.0], "series": "S",
     })
     out = bs.event_table(rows).set_index("event")
@@ -149,6 +150,16 @@ def test_event_table_sums_the_markets_of_an_event_and_averages_the_live_share():
     skipped = skipped.set_index("event")
     assert skipped.loc["A", "mean_spread"] == pytest.approx(0.04)
     assert skipped.loc["B", "mean_spread"] == pytest.approx(0.02)
+    # the premium at the fills of an event weighs each market by its contracts
+    assert out.loc["A", "fill_premium"] == pytest.approx((30 * 0.08 + 40 * 0.10) / 70)
+    assert out.loc["B", "fill_premium"] == pytest.approx(0.20)
+    assert list(out.columns)[list(out.columns).index("mean_spread") + 1] == "fill_premium"
+    # a market without a fill has no premium and no weight; an event without any has none
+    empty = rows.assign(contracts=[30.0, 0.0, 0.0], fills=[3, 0, 0],
+                        fill_premium=[0.08, float("nan"), float("nan")])
+    empty = bs.event_table(empty).set_index("event")
+    assert empty.loc["A", "fill_premium"] == pytest.approx(0.08)
+    assert math.isnan(empty.loc["B", "fill_premium"])
 
 
 def test_evaluated_pnl_is_in_release_order_without_the_burn_in():
@@ -178,17 +189,22 @@ def test_policy_summary_by_hand():
     events.loc[events["policy"] == "always_on", "fills"] = [1, 4, 8]
     events.loc[events["policy"] == "always_on", "quotes_live_share"] = [1.0, 0.5, 0.25]
     events.loc[events["policy"] == "always_on", "mean_spread"] = [0.90, 0.04, 0.08]
+    events.loc[events["policy"] == "always_on", "fill_premium"] = [0.50, 0.02, 0.04]
     s = bs.policy_summary(events, "always_on")
     assert s["n_events"] == 2 and s["pnl"] == -1.0 and s["fees"] == 1.0 and s["gross"] == 0.0
     assert s["fills"] == 6.0 and s["contracts"] == 100.0 and s["marked_pnl"] == -1.0
     assert s["cents_per_contract"] == pytest.approx(100.0 * (2.0 - 4.0) / 200.0)  # -1 cent
     assert s["live_share"] == 0.375
     assert s["spread"] == pytest.approx(0.06)  # the burn-in event (0.90) is left out
+    # the premium at the fills weighs the events by their contracts (50 and 150): the burn-in
+    # event (0.50) is left out
+    assert s["fill_premium"] == pytest.approx((50 * 0.02 + 150 * 0.04) / 200)
     events.loc[(events["policy"] == "always_on") & (events["event"] == "E001"),
                "mean_spread"] = float("nan")  # an event without a two-sided quote is skipped
     assert bs.policy_summary(events, "always_on")["spread"] == pytest.approx(0.08)
-    none = events.assign(contracts=0.0)
+    none = events.assign(contracts=0.0, fill_premium=float("nan"))
     assert math.isnan(bs.policy_summary(none, "always_on")["cents_per_contract"])
+    assert math.isnan(bs.policy_summary(none, "always_on")["fill_premium"])
 
 
 def test_analyse_gives_each_pair_as_a_minus_b_with_the_documented_bootstrap():
@@ -320,14 +336,19 @@ def test_the_primary_table_says_what_flat_matched_is_and_what_it_does_not_show()
     assert heading == ("### B1. `release_aware` minus `flat_matched`, net P&L per event "
                        "(synthetic data)")
     assert ("`flat_matched` quotes one flat premium equal to the average of the bucket premiums "
-            "over the quoting window, so the difference is the effect of when a premium is "
-            "applied and not of its average size (both premiums are per unit of 4m(1 - m); the "
-            "quoted spreads in USD also depend on the price, see B2).") in reading
+            "over the clock of the quoting window (both premiums are per unit of 4m(1 - m); the "
+            "quoted spreads in USD also depend on the price, see B2). That is the same premium "
+            "averaged over the clock and not the same premium where the quotes are hit: B2 gives "
+            "the premium at the fills of each policy and B10 repeats the comparison at an equal "
+            "premium at the fills.") in reading
+    assert "so the difference is the effect of when" not in block  # the claim of the first reading
     assert "pooled" not in block  # the first primary pair is B3's and B8's
     assert not_shown.startswith(
         "Does not show: whether the planted informed share is what makes the bucket premiums "
         "useful: the null world's buckets also differ, because of the trade-rate surge and the "
-        "price level; and whether either policy earns or loses money on real Kalshi markets")
+        "price level; whether the difference comes from when the premium is applied or from the "
+        "larger premium that `release_aware` has at its fills (B10); and whether either policy "
+        "earns or loses money on real Kalshi markets")
     assert "\n" not in reading and "\n" not in not_shown
 
 
@@ -365,9 +386,10 @@ def read(small, name):
 
 def test_the_files_are_written(small):
     names = sorted(p.name for p in small["out"].iterdir())
-    assert names == ["backtest_study.manifest.txt", "events_needed.csv", "levels.csv",
-                     "pairs.csv", "per_event.csv", "per_event_windows.csv", "policies.csv",
-                     "premium_check.csv", "summary.json", "tables.md", "windows.csv"]
+    assert names == ["backtest_study.manifest.txt", "events_needed.csv", "fill_matched.csv",
+                     "levels.csv", "pairs.csv", "per_event.csv", "per_event_windows.csv",
+                     "policies.csv", "premium_check.csv", "summary.json", "tables.md",
+                     "windows.csv"]
     manifest = (small["out"] / "backtest_study.manifest.txt").read_text()
     assert "command: python -m kalshi_mm.experiments.backtest_study --out results/small" in manifest
     assert "seeds: test" in manifest and "bootstrap: 300 replications" in manifest
@@ -382,6 +404,12 @@ def test_the_files_are_written(small):
     assert "release_aware once and flat_matched with the flat premium multiplied by F " \
            "(QuoteParams.flat_scale) in {0.5, 1, 2}, no other policy" in manifest
     assert "default_rng([20261113, 6, index of F, seed])" in manifest
+    assert "B10, added after a second independent review (exploratory): both worlds of the main " \
+           "grid" in manifest
+    assert "then flat_matched again with the flat premium multiplied by F_eq, the premium per " \
+           "unit of 4m(1 - m) at the fills of release_aware over that of flat_matched in the " \
+           "first run" in manifest
+    assert "default_rng([20261113, 7, index of the world, seed])" in manifest
     assert json.loads((small["out"] / "summary.json").read_text()) == small["summary"]
 
 
@@ -429,7 +457,16 @@ def test_the_policies_file_equals_a_recomputation_from_the_per_event_file(small)
             100.0 * part["pnl"].sum() / part["contracts"].sum(), rel=1e-8)
         assert row.live_share == pytest.approx(part["quotes_live_share"].mean(), rel=1e-8)
         assert row.spread == pytest.approx(part["mean_spread"].mean(), rel=1e-8)  # NaN skipped
+        filled = part[part["contracts"] > 0.0]  # the premium at the fills weights the contracts
+        if filled.empty:
+            assert np.isnan(row.fill_premium)
+        else:
+            weighted = (filled["fill_premium"] * filled["contracts"]).sum()
+            assert row.fill_premium == pytest.approx(weighted / filled["contracts"].sum(), rel=1e-8)
     assert (per_event["mean_spread"].dropna() > 0.0).all()  # a spread is ask minus bid
+    # a premium at the fills is defined where something was filled and nowhere else
+    assert per_event["fill_premium"].isna().eq(per_event["contracts"] == 0.0).all()
+    assert (per_event["fill_premium"].dropna() >= 0.0).all()  # the premiums are floored at zero
 
 
 def test_the_sweep_cells_agree_with_the_main_grid_and_with_each_other(small):
@@ -461,13 +498,13 @@ def test_tables_follow_the_block_format(small):
     text = (small["out"] / "tables.md").read_text()
     headings = re.findall(r"(?m)^### .*$", text)
     assert [re.match(r"### (B\d+)\. ", h).group(1) for h in headings] == [
-        "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9"]
+        "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10"]
     assert all(h.endswith(" (synthetic data)") for h in headings)
     heading = load_make_tables().HEADING  # the pattern that finds the tables for the README
-    assert [m.group(1) for m in heading.finditer(text)] == [f"B{i}" for i in range(1, 10)]
+    assert [m.group(1) for m in heading.finditer(text)] == [f"B{i}" for i in range(1, 11)]
     blocks = re.split(r"(?m)^(?=### )", text.strip() + "\n")
     blocks = [b.strip() for b in blocks if b.strip()]
-    assert len(blocks) == 9
+    assert len(blocks) == 10
     for block in blocks:
         paragraphs = block.split("\n\n")
         assert len(paragraphs) == 4, block[:80]
@@ -758,9 +795,13 @@ def test_the_reading_of_the_policy_table_counts_the_losing_cells():
     # USD per contract; the planted world is twice as wide
     spread = {"always_on": 0.040, "pull_only": 0.041, "pooled_premium": 0.056,
               "flat_matched": 0.050, "release_aware": 0.048}
+    # USD per contract per unit of 4m(1 - m), at the fills
+    fill = {"always_on": 0.0, "pull_only": 0.0, "pooled_premium": 0.028, "flat_matched": 0.0165,
+            "release_aware": 0.025}
     values = {f"{w}:{p}": {"pnl": v, "pnl_mc_se": 0.1, "fees": 1.0, "fills": 10.0,
                            "contracts": 50.0, "cents_per_contract": 0.5, "marked_pnl": v,
-                           "live_share": 0.9, "spread": spread[p] * (2 if w == PLANTED else 1)}
+                           "live_share": 0.9, "spread": spread[p] * (2 if w == PLANTED else 1),
+                           "fill_premium": fill[p] * (2 if w == PLANTED else 1)}
               for w, vs in ((NULL, [-3.0, -2.0, 1.0, 2.0, 4.0]),
                             (PLANTED, [-8.0, -1.0, -2.0, 0.5, -0.5]))
               for p, v in zip(POLICIES, vs, strict=True)}
@@ -771,16 +812,26 @@ def test_the_reading_of_the_policy_table_counts_the_losing_cells():
     assert "the lowest `always_on` in the planted world (-8.00 USD)" in block
     rows = [line for line in block.splitlines() if line.startswith(("| null", "| planted"))]
     assert [row.split(" | ")[1] for row in rows] == [f"`{p}`" for p in POLICIES] * 2
-    # the last column is the mean quoted spread in cents; the reading gives it for the three
-    # policies that quote a premium, in each world
+    # the last two columns are the mean quoted spread and the premium at the fills, in cents; the
+    # reading gives both for the three policies that quote a premium, in each world
     header = block.splitlines()[4]
-    assert header.endswith("| Share of intervals with a quote | Mean quoted spread, cents |")
-    assert [row.split(" | ")[-1].rstrip(" |") for row in rows] == [
+    assert header.endswith("| Share of intervals with a quote | Mean quoted spread, cents | "
+                           "Premium at the fills, cents per unit of 4m(1 - m) |")
+    assert [row.split(" | ")[-2] for row in rows] == [
         "4.00", "4.10", "5.60", "5.00", "4.80", "8.00", "8.20", "11.20", "10.00", "9.60"]
+    assert [row.split(" | ")[-1].rstrip(" |") for row in rows] == [
+        "0.00", "0.00", "2.80", "1.65", "2.50", "0.00", "0.00", "5.60", "3.30", "5.00"]
     assert ("In the null world the mean quoted spread, in cents, is `release_aware` 4.80, "
             "`flat_matched` 5.00, `pooled_premium` 5.60.") in block
     assert ("In the planted world the mean quoted spread, in cents, is `release_aware` 9.60, "
             "`flat_matched` 10.00, `pooled_premium` 11.20.") in block
+    assert ("In the null world the premium per unit of 4m(1 - m) at the fills, over the contracts "
+            "filled, in cents, is `release_aware` 2.50, `flat_matched` 1.65, `pooled_premium` "
+            "2.80.") in block
+    assert ("In the planted world the premium per unit of 4m(1 - m) at the fills, over the "
+            "contracts filled, in cents, is `release_aware` 5.00, `flat_matched` 3.30, "
+            "`pooled_premium` 5.60.") in block
+    assert block.count("the premium per unit of 4m(1 - m) at the fills") == 2
 
 
 def fake_pairs(means):
@@ -981,9 +1032,9 @@ def test_the_reading_of_the_window_table_follows_the_sign_and_says_it_is_explora
     assert rows[3] == "| 30 | 10 | +0.75 (0.10) | 0 | 6 | -0.25 (0.20) | 0 | 3 | 1.95 | 1.50 " \
                       "| 9.00 | 0.75 |"
     assert not_shown == (
-        "Does not show: whether either difference follows the level of the premium only (B9 is "
-        "the test of that), and anything about real markets: the hours of trading are those of "
-        "the synthetic world.")
+        "Does not show: what either difference is made of: B9 and B10 change the level of the "
+        "flat premium and describe what happens, they do not test it; and anything about real "
+        "markets: the hours of trading are those of the synthetic world.")
 
 
 def test_the_reading_of_the_window_table_handles_no_difference_and_three_windows():
@@ -1157,11 +1208,11 @@ def test_the_summary_and_the_table_carry_the_window_numbers(small):
                 ) in text
 
 
-def test_the_readme_parser_reads_the_nine_tables_of_the_study(small, tmp_path):
+def test_the_readme_parser_reads_the_ten_tables_of_the_study(small, tmp_path):
     (tmp_path / "backtest").mkdir()
     (tmp_path / "backtest" / "tables.md").write_text((small["out"] / "tables.md").read_text())
     tables = load_make_tables().read_tables(tmp_path)
-    assert list(tables) == [f"B{i}" for i in range(1, 10)]
+    assert list(tables) == [f"B{i}" for i in range(1, 11)]
     parts = tables["B8"].split("\n\n")  # heading, Reading, table, Does not show
     assert len(parts) == 4 and parts[0].startswith("### B8. Exploratory: ")
     assert parts[0].endswith("(synthetic data)") and parts[1].startswith("Reading: Exploratory: ")
@@ -1170,6 +1221,10 @@ def test_the_readme_parser_reads_the_nine_tables_of_the_study(small, tmp_path):
     assert len(levels) == 4 and levels[0].startswith("### B9. Exploratory: ")
     assert levels[0].endswith("(synthetic data)") and levels[1].startswith("Reading: Exploratory: ")
     assert len(levels[2].splitlines()) == 2 + 3 and levels[3].startswith("Does not show: ")
+    fills = tables["B10"].split("\n\n")
+    assert len(fills) == 4 and fills[0].startswith("### B10. Exploratory: ")
+    assert fills[0].endswith("(synthetic data)") and fills[1].startswith("Reading: Exploratory: ")
+    assert len(fills[2].splitlines()) == 2 + 2 and fills[3].startswith("Does not show: ")
 
 
 # ------------------------------------------------------------ B9: the level sweep (exploratory)
@@ -1259,7 +1314,8 @@ def test_the_reading_of_the_level_table_gives_the_ends_the_sign_change_and_the_p
         "The mean pooled premium at the end is 3.00 cents and the mean matched premium 2.00 "
         "cents, a ratio of 1.50, so at the end of a dataset `pooled_premium` quotes the premium "
         "that `flat_matched` quotes at F = 1.50. Every policy loses money in the planted world "
-        "(B2), so a wider quote loses less. Intervals are percentile intervals of a cluster "
+        "(B2), so a wider quote loses less. B10 gives the scale at which the two policies quote "
+        "the same premium at their fills. Intervals are percentile intervals of a cluster "
         "bootstrap over events with 10,000 replications.")
     rows = table.splitlines()
     assert row_cells(rows[0]) == [
@@ -1422,3 +1478,248 @@ def test_the_summary_of_the_levels_equals_the_levels_file(small):
         assert entry["above_zero"] == int((part["lo"] > 0.0).sum())
         assert entry["premium_flat"] == pytest.approx(part["premium_flat"].mean(), rel=1e-8)
         assert entry["premium_pooled"] == pytest.approx(part["premium_pooled"].mean(), rel=1e-8)
+
+
+# ------------------------------------------- B10: an equal premium at the fills (exploratory)
+def independent_fill_premium(world, policy, quote):
+    """The premium per unit of 4 m (1 - m) at the fills of one policy in the evaluated events,
+    from the rows of the backtest: the mean over the contracts filled in the markets."""
+    tape = world.tape.drop(columns=[c for c in world.tape if c.startswith("latent_")])
+    rows = walk_forward(tape, world.markets, world.events, (policy,), quote)
+    done = rows[rows["evaluated"] & (rows["contracts"] > 0.0)]
+    return float((done["fill_premium"] * done["contracts"]).sum() / done["contracts"].sum())
+
+
+def test_the_fill_matched_file_has_one_row_per_world_and_dataset(small):
+    fills = read(small, "fill_matched.csv")
+    assert fills.columns.tolist() == [
+        "world", "seed", "n_events", "flat_scale", "mean", "lo", "hi", "fill_aware",
+        "fill_flat_base", "fill_flat"]
+    assert fills[["world", "seed"]].values.tolist() == [
+        [world, seed] for world in (NULL, PLANTED) for seed in (1, 2, 3)]
+    assert (fills["n_events"] == 25).all()
+    assert ((fills["lo"] <= fills["mean"]) & (fills["mean"] <= fills["hi"])).all()
+    for column in ("flat_scale", "fill_aware", "fill_flat_base", "fill_flat"):
+        assert (fills[column] > 0.0).all()
+
+
+def test_the_fill_matched_file_equals_a_recomputation_from_independent_runs(small):
+    fills = read(small, "fill_matched.csv")
+    names = [name for name, _ in SMALL.worlds()]
+    params = {name: replace(SMALL.world, pi1=pi1) for name, pi1 in SMALL.worlds()}
+    for row in fills.itertuples():
+        world = generate_world(params[row.world], row.seed)
+        aware = independent_pnl(world, "release_aware", SMALL.quote)
+        fill_aware = independent_fill_premium(world, "release_aware", SMALL.quote)
+        fill_base = independent_fill_premium(world, "flat_matched", SMALL.quote)
+        scale = SMALL.quote.flat_scale * fill_aware / fill_base  # F_eq
+        quote = replace(SMALL.quote, flat_scale=scale)
+        d = (aware - independent_pnl(world, "flat_matched", quote)).to_numpy()  # a minus b
+        assert row.flat_scale == pytest.approx(scale, rel=1e-8)
+        assert (row.fill_aware, row.fill_flat_base) == pytest.approx((fill_aware, fill_base),
+                                                                      rel=1e-8)
+        assert row.fill_flat == pytest.approx(
+            independent_fill_premium(world, "flat_matched", quote), rel=1e-8)
+        assert row.n_events == d.size == 25 and row.mean == pytest.approx(d.mean(), rel=1e-8)
+        # the generator is keyed by the index of the world, not by F_eq
+        counts = np.random.default_rng(
+            [bs.SEED, bs.KIND_FILLS, names.index(row.world), row.seed]).multinomial(
+            25, np.full(25, 1 / 25), 300)
+        lo, hi = np.quantile((counts * d).sum(axis=1) / 25, [0.025, 0.975])
+        assert (row.lo, row.hi) == pytest.approx((lo, hi), rel=1e-7, abs=1e-9)
+
+
+def test_the_scaled_flat_premium_is_quoted_at_about_the_premium_of_release_aware(small):
+    fills = read(small, "fill_matched.csv")
+    # the fills move a little when the quote moves, so the match is close and not exact
+    np.testing.assert_allclose(fills["fill_flat"], fills["fill_aware"], rtol=0.2)
+    # and without the scale the two premiums at the fills are not the same
+    assert not np.allclose(fills["fill_flat_base"], fills["fill_aware"], rtol=0.01)
+    np.testing.assert_allclose(fills["flat_scale"], fills["fill_aware"] / fills["fill_flat_base"],
+                               rtol=1e-8)
+
+
+def test_the_fill_matched_runs_walk_both_policies_once_and_flat_matched_again_at_f_eq(monkeypatch):
+    seen = []
+    real = bs.walk_forward
+
+    def spy(tape, markets, events, policies, params, **kwargs):
+        seen.append((list(tape.columns), tuple(policies), params.flat_scale))
+        return real(tape, markets, events, policies, params, **kwargs)
+
+    monkeypatch.setattr(bs, "walk_forward", spy)
+    config = replace(SMALL, seeds=(1, 2), boot_reps=50)
+    fills = bs.fill_matched_runs(config)
+    assert [policies for _, policies, _ in seen] == [("release_aware", "flat_matched"),
+                                                     ("flat_matched",)] * 4
+    assert not any(c.startswith("latent_") for columns, _, _ in seen for c in columns)
+    assert [scale for _, policies, scale in seen if len(policies) == 2] == [1.0] * 4
+    assert [scale for _, policies, scale in seen if len(policies) == 1] == pytest.approx(
+        fills["flat_scale"].tolist())
+    assert fills[["world", "seed"]].values.tolist() == [
+        [NULL, 1], [NULL, 2], [PLANTED, 1], [PLANTED, 2]]
+
+
+def test_f_eq_is_taken_on_top_of_the_scale_of_the_quote_parameters(monkeypatch):
+    seen = []
+    real = bs.walk_forward
+
+    def spy(tape, markets, events, policies, params, **kwargs):
+        seen.append((tuple(policies), params.flat_scale))
+        return real(tape, markets, events, policies, params, **kwargs)
+
+    monkeypatch.setattr(bs, "walk_forward", spy)
+    base = replace(SMALL, seeds=(1,), boot_reps=50, quote=replace(SMALL.quote, flat_scale=1.0))
+    scaled = replace(base, quote=replace(SMALL.quote, flat_scale=2.0))
+    one = bs.fill_matched_runs(base)
+    two = bs.fill_matched_runs(scaled)
+    # with a scale of 2 in the quote parameters the first run of flat_matched quotes twice the
+    # premium, and the scale of the second run is 2 times the ratio of the premiums at the fills
+    # of the first run: release_aware does not read the scale and has the same premium
+    for row_one, row_two in zip(one.itertuples(), two.itertuples(), strict=True):
+        assert row_two.fill_aware == pytest.approx(row_one.fill_aware, rel=1e-9)
+        assert row_two.flat_scale == pytest.approx(
+            2.0 * row_two.fill_aware / row_two.fill_flat_base)
+    assert [scale for policies, scale in seen if len(policies) == 2] == [1.0, 1.0, 2.0, 2.0]
+
+
+@pytest.mark.parametrize("missing", ["flat_matched", "release_aware"])
+@pytest.mark.parametrize("premium", [0.0, NAN])
+def test_a_dataset_without_a_premium_at_the_fills_has_nothing_to_match(
+        monkeypatch, missing, premium):
+    def fake(world, policies, quote):
+        events = make_events({p: [1.0] * 8 for p in policies}, evaluated=[False] * 5 + [True] * 3)
+        return events.assign(fill_premium=np.where(events["policy"] == missing, premium, 0.05))
+
+    monkeypatch.setattr(bs, "walk_world", fake)
+    with pytest.raises(ValueError, match="no premium at the fills to match in the null_world "
+                                         "dataset 1"):
+        bs.fill_matched_runs(replace(SMALL, seeds=(1,), boot_reps=50))
+
+
+def test_fill_matched_summary_by_hand():
+    fills = pd.DataFrame({
+        "world": [NULL, NULL, PLANTED, PLANTED, PLANTED], "seed": [1, 2, 1, 2, 3],
+        "n_events": 25, "flat_scale": [1.2, 1.4, 1.5, 1.6, 1.9],
+        "mean": [-0.5, 0.5, -1.0, -2.0, 0.5], "lo": [-1.0, -0.2, -2.0, -3.0, -0.5],
+        "hi": [0.2, 1.0, -0.5, -1.0, 1.5],
+        "fill_aware": [0.02, 0.03, 0.04, 0.05, 0.06],
+        "fill_flat_base": [0.015, 0.02, 0.025, 0.03, 0.03],
+        "fill_flat": [0.021, 0.029, 0.04, 0.052, 0.058],
+    })
+    out = bs.fill_matched_summary(fills)
+    assert list(out) == [NULL, PLANTED]
+    null, planted = out[NULL], out[PLANTED]
+    assert null["n_datasets"] == 2 and null["mean"] == 0.0
+    assert (null["below_zero"], null["above_zero"]) == (0, 0)  # both intervals contain zero
+    assert null["mc_se"] == pytest.approx(np.std([-0.5, 0.5], ddof=1) / math.sqrt(2))
+    assert planted["n_datasets"] == 3 and planted["mean"] == pytest.approx((-1.0 - 2.0 + 0.5) / 3)
+    assert (planted["below_zero"], planted["above_zero"]) == (2, 0)  # the third interval has zero
+    assert (planted["min"], planted["max"]) == (-2.0, 0.5)
+    assert (null["flat_scale"], null["flat_scale_min"], null["flat_scale_max"]) == pytest.approx(
+        (1.3, 1.2, 1.4))
+    assert (planted["flat_scale"], planted["flat_scale_min"], planted["flat_scale_max"]) == (
+        pytest.approx(5.0 / 3.0), 1.5, 1.9)
+    assert null["fill_aware"] == pytest.approx(0.025)
+    assert null["fill_flat_base"] == pytest.approx(0.0175)
+    assert null["fill_flat"] == pytest.approx(0.025)
+    assert planted["fill_aware"] == pytest.approx(0.05)
+    assert planted["fill_flat_base"] == pytest.approx(0.085 / 3)
+    assert planted["fill_flat"] == pytest.approx(0.15 / 3)
+
+
+def fake_fills(entries):
+    """A summary with the B10 entries of ``{world: (mean, intervals below zero, intervals above,
+    F_eq, premium of release_aware, of flat_matched at F = 1, of flat_matched at F_eq)}``, the
+    premiums in USD per contract per unit of 4m(1 - m)."""
+    out = {}
+    for world, (mean, below, above, scale, aware, base, flat) in entries.items():
+        out[world] = {
+            "n_datasets": 10, "mean": mean, "mc_se": 0.08, "min": mean - 0.5, "max": mean + 0.5,
+            "below_zero": below, "above_zero": above, "half_width": 0.4, "flat_scale": scale,
+            "flat_scale_min": scale - 0.02, "flat_scale_max": scale + 0.03, "fill_aware": aware,
+            "fill_flat_base": base, "fill_flat": flat}
+    return {"fill_matched": out}
+
+
+def test_the_reading_of_the_fill_matched_table_gives_f_eq_the_premiums_and_the_sign():
+    config = bs.StudyConfig()
+    summary = fake_fills({NULL: (-0.17, 3, 0, 1.28, 0.0160, 0.0125, 0.0160),
+                          PLANTED: (0.38, 0, 4, 1.54, 0.0254, 0.0165, 0.0252)})
+    heading, reading, table, not_shown = bs.table_fill_matched(summary, config).strip().split(
+        "\n\n")
+    assert heading == ("### B10. Exploratory: `release_aware` minus `flat_matched` at an equal "
+                       "premium at the fills (synthetic data)")
+    assert reading == (
+        "Reading: Exploratory: added after a second independent review showed that "
+        "`flat_matched` is matched to `release_aware` on the average of the premium over the "
+        "clock and not where the quotes are hit (B1, B2). In the null world `release_aware` "
+        "quotes 1.60 cents per unit of 4m(1 - m) at its fills against 1.25 for `flat_matched` "
+        "(+28%). With the flat premium scaled by F_eq = 1.28 both quote about the same premium "
+        "at their fills (1.60 and 1.60 cents) and `release_aware` earned 0.17 USD per event "
+        "less than `flat_matched` (mean of 10 datasets; the 95% interval lies below zero in 3 "
+        "of 10 datasets and above zero in 0). In the planted world `release_aware` quotes 2.54 "
+        "cents per unit of 4m(1 - m) at its fills against 1.65 for `flat_matched` (+54%). With "
+        "the flat premium scaled by F_eq = 1.54 both quote about the same premium at their "
+        "fills (2.54 and 2.52 cents) and `release_aware` earned 0.38 USD per event more than "
+        "`flat_matched` (mean of 10 datasets; the 95% interval lies below zero in 0 of 10 "
+        "datasets and above zero in 4). F_eq is the premium per unit of 4m(1 - m) at the fills "
+        "of `release_aware` divided by that of `flat_matched`, from one run of each; "
+        "`flat_matched` is then run again with its flat premium multiplied by F_eq. Intervals "
+        "are percentile intervals of a cluster bootstrap over events with 10,000 replications.")
+    rows = table.splitlines()
+    assert row_cells(rows[0]) == [
+        "World", "Scale F_eq of the flat premium, mean (range over datasets)",
+        "Premium at the fills of `release_aware`, cents",
+        "Premium at the fills of `flat_matched` at F = 1, cents",
+        "Premium at the fills of `flat_matched` at F_eq, cents",
+        "`release_aware` minus `flat_matched` at F_eq: mean difference, USD per event "
+        "(MC SE over datasets)", "Range over datasets", "95% interval below zero",
+        "95% interval above zero"]
+    assert len(rows) == 2 + 2
+    assert row_cells(rows[2]) == ["null", "1.28 (1.26 to 1.31)", "1.60", "1.25", "1.60",
+                                  "-0.17 (0.08)", "-0.67 to +0.33", "3", "0"]
+    assert row_cells(rows[3]) == ["planted", "1.54 (1.52 to 1.57)", "2.54", "1.65", "2.52",
+                                  "+0.38 (0.08)", "-0.12 to +0.88", "0", "4"]
+    assert not_shown == (
+        "Does not show: which level is the right one to hold fixed: the average over the clock "
+        "is fixed in advance and is not what the P&L responds to, and the premium at the fills "
+        "is what it responds to but is partly an outcome of the schedule, because a policy is "
+        "filled less where it quotes more premium; that F_eq is known beforehand: it is "
+        "estimated from the same run as the difference, and the intervals treat it as given; "
+        "and anything about real markets.")
+    assert "\n" not in reading and "\n" not in not_shown
+    assert "F*" not in table and "F*" not in reading  # an asterisk would italicise in Markdown
+
+
+def test_the_reading_of_the_fill_matched_table_handles_a_zero_difference_and_a_premium_of_zero():
+    config = bs.StudyConfig(boot_reps=500)
+    block = bs.table_fill_matched(fake_fills({NULL: (0.0, 0, 0, 1.0, 0.02, 0.02, 0.02),
+                                              PLANTED: (0.5, 0, 0, 1.0, 0.02, 0.0, 0.02)}),
+                                  config)
+    reading = next(line for line in block.splitlines() if line.startswith("Reading:"))
+    assert ("In the null world `release_aware` quotes 2.00 cents per unit of 4m(1 - m) at its "
+            "fills against 2.00 for `flat_matched` (+0%).") in reading
+    assert "and `release_aware` and `flat_matched` earned the same per event" in reading
+    assert "against 0.00 for `flat_matched` (n/a)." in reading  # no change from a premium of zero
+    assert "500 replications" in reading
+
+
+def test_the_summary_and_the_table_carry_the_fill_matched_numbers(small):
+    fills, entries = read(small, "fill_matched.csv"), small["summary"]["fill_matched"]
+    assert list(entries) == [NULL, PLANTED]
+    text = (small["out"] / "tables.md").read_text()
+    for world, entry in entries.items():
+        part = fills[fills["world"] == world]
+        assert entry["n_datasets"] == 3 and entry["mean"] == pytest.approx(part["mean"].mean())
+        assert entry["mc_se"] == pytest.approx(part["mean"].std(ddof=1) / math.sqrt(3))
+        assert entry["below_zero"] == int((part["hi"] < 0.0).sum())
+        assert entry["above_zero"] == int((part["lo"] > 0.0).sum())
+        assert entry["flat_scale"] == pytest.approx(part["flat_scale"].mean(), rel=1e-8)
+        assert (entry["flat_scale_min"], entry["flat_scale_max"]) == pytest.approx(
+            (part["flat_scale"].min(), part["flat_scale"].max()), rel=1e-8)
+        for key in ("fill_aware", "fill_flat_base", "fill_flat"):
+            assert entry[key] == pytest.approx(part[key].mean(), rel=1e-8)
+        assert f"{entry['mean']:+.2f} ({entry['mc_se']:.2f})" in text
+        assert f"{entry['flat_scale']:.2f} ({entry['flat_scale_min']:.2f} to " \
+               f"{entry['flat_scale_max']:.2f})" in text
