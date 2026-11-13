@@ -346,9 +346,12 @@ def test_the_price_grid_of_a_market_is_stored_when_given_and_null_otherwise(conn
     assert list(panel.read_dataset(conn)[1].columns) == MARKET_COLUMNS
 
 
-# The markets table as the first version of the schema created it.
+# The markets and trades tables as the first version of the schema created them.
 OLD_MARKETS = """CREATE TABLE markets (market TEXT PRIMARY KEY, event TEXT NOT NULL,
     outcome INTEGER, open_ts REAL NOT NULL, close_ts REAL NOT NULL)"""
+OLD_TRADES = """CREATE TABLE trades (market TEXT NOT NULL, ts REAL NOT NULL, seq INTEGER NOT NULL,
+    price REAL NOT NULL, size REAL NOT NULL, side INTEGER NOT NULL, trade_id TEXT,
+    PRIMARY KEY (market, ts, seq)) WITHOUT ROWID"""
 
 
 def test_a_database_of_the_older_schema_is_refused_with_a_clear_message_and_left_alone(tmp_path):
@@ -360,16 +363,31 @@ def test_a_database_of_the_older_schema_is_refused_with_a_clear_message_and_left
         problem = panel.schema_problem(conn)
         assert "earlier version of the schema" in problem
         assert "markets.price_level_structure" in problem and "markets.price_ranges" in problem
+        assert "trades" not in problem  # a table that does not exist yet is created, not missing
         with pytest.raises(panel.OldSchemaError, match="build a new database"):
             panel.create_schema(conn)
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
         assert tables == {"markets", "sqlite_autoindex_markets_1"}  # nothing was created
+        conn.execute(OLD_TRADES)
+        assert "trades.endpoint" in panel.schema_problem(conn)
 
 
 def test_a_new_or_current_database_has_no_schema_problem(conn):
     assert panel.schema_problem(conn) is None
     with closing(sqlite3.connect(":memory:")) as empty:
         assert panel.schema_problem(empty) is None  # no table yet: create_schema makes them
+
+
+def test_the_endpoint_of_a_trade_is_stored_when_given_and_checked(conn):
+    tape, markets, events = small_dataset()
+    tape["endpoint"] = ["historical", "both", None]
+    panel.write_dataset(conn, tape, markets, events, source="kalshi-public-api")
+    assert conn.execute("SELECT endpoint FROM trades ORDER BY market, ts").fetchall() == [
+        ("historical",), ("both",), (None,)]
+    assert list(panel.read_dataset(conn)[0].columns) == TAPE_COLUMNS
+    tape["endpoint"] = ["historical", "elsewhere", None]
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+        panel.write_dataset(conn, tape, markets, events, source="kalshi-public-api")
 
 
 # ---------------------------------------------------------------------------------- trade ids

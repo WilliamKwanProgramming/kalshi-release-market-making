@@ -31,6 +31,7 @@ suggests testing with the public GetMarkets endpoint, but no page says in words 
 | `ticker` | `market` | the `event` column is the `event_ticker` of that market |
 | `trade_id` | `trade_id` | stored in SQLite, not in the contract frame; a repeat within a market is removed |
 | `is_block_trade` | none | `true`: dropped. A record without the field counts as not a block trade, and is counted |
+| none | `endpoint` | not an API field: `historical` or `live`, the endpoint the trade was read from, or `both` when the same `trade_id` came from the two; stored in SQLite, not in the contract frame |
 
 `no_price_dollars` and `taker_book_side` are not read: the price is the YES price whichever side
 traded. `seq` counts 0, 1, ... in the order (`ts`, `trade_id`) within a market. A trade at or after the
@@ -61,7 +62,11 @@ only on `/historical/trades`. The cutoffs advance over time; no schedule is give
   before the cutoff to the release.
 - The pages say `min_ts` and `max_ts` filter "after" and "before" a time, not whether the time itself
   counts. The ranges are widened to be right either way, so a trade can arrive from both endpoints;
-  repeated `trade_id` values are removed.
+  repeated `trade_id` values are removed. The fetch prints, per series and for all series, two counts:
+  the `trade_id` values returned by both endpoints (kept once), and the groups of kept trades with
+  different `trade_id` but the same market, time, price, size and taker side, read from the two
+  endpoints. The second kind is kept: it is either one trade that the endpoints gave two ids, counted
+  twice, or genuine trades that look alike, and the data cannot tell which.
 - The cutoff is read before and after each series. If it moved, the script warns: trades created
   between the old and the new cutoff may be missing for markets read after the move.
 
@@ -84,6 +89,7 @@ events  (event PRIMARY KEY, series, release_ts REAL)
 markets (market PRIMARY KEY, event -> events, outcome 0/1/NULL, open_ts REAL, close_ts REAL,
          price_level_structure, price_ranges)
 trades  (market -> markets, ts REAL, seq INTEGER, price REAL, size REAL, side -1/1, trade_id,
+         endpoint historical/live/both/NULL,
          PRIMARY KEY (market, ts, seq)) WITHOUT ROWID; unique (market, trade_id) when not NULL
 meta    (key PRIMARY KEY, value)   -- key "source": "synthetic" or "kalshi-public-api"
 ```

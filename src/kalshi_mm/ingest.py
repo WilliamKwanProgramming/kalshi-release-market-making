@@ -8,6 +8,9 @@ Field mapping (the documentation these names come from is listed in docs/data.md
 * trade ``taker_outcome_side`` -> ``side``, +1 for ``yes`` and -1 for ``no``; the deprecated
   ``taker_side`` is read only when the new field is absent;
 * trade ``trade_id`` -> ``trade_id`` (stored, not part of the contract);
+* the endpoint a trade was read from (not an API field: :func:`fetch_series` marks each record
+  under the key :data:`ENDPOINT_FIELD`) -> ``endpoint``, ``historical``, ``live`` or ``both`` when
+  the same ``trade_id`` came from the two (stored, not part of the contract);
 * market ``ticker`` -> ``market``; ``event_ticker`` -> ``event``; ``open_time`` -> ``open_ts``;
   ``close_time`` -> ``close_ts``;
 * market ``series_ticker`` if the record has it, else the event ticker up to its first hyphen
@@ -32,6 +35,12 @@ window ``[window_start, window_end)``. Trades of the markets that remain: unread
 block trade; at or after the release (``ts >= release``); then a market with fewer than
 ``min_trades`` trades left is dropped with its trades. Trades are numbered ``seq = 0, 1, ...`` in
 the order (``ts``, ``trade_id``), so the numbering does not depend on the order of the pages.
+
+Trades near the historical cutoff can be read from both trade endpoints. The report counts the
+``trade_id`` values returned by both (each removed once, as a repeat) and, among the kept trades,
+the groups that share market, ``ts``, ``price``, ``size`` and ``side`` but not ``trade_id`` and were
+read from the two endpoints (:func:`lookalike_groups`). Those are kept: two genuine trades can look
+alike, and the documentation does not say whether a trade keeps its ``trade_id`` across endpoints.
 
 Fetching. :func:`list_series_markets` lists a series from ``GET /markets`` and ``GET
 /historical/markets`` (one record per ticker). :func:`fetch_series` reads the trades of the markets
@@ -65,6 +74,10 @@ from kalshi_mm.kalshi_api import HistoricalCutoff, KalshiClient, parse_iso_datet
 
 __all__ = [
     "ALREADY_LOADED",
+    "BOTH",
+    "ENDPOINT_FIELD",
+    "HISTORICAL",
+    "LIVE",
     "MARKET_MARGIN_S",
     "MIN_TRADES",
     "OUT_OF_SCOPE",
@@ -87,6 +100,7 @@ __all__ = [
     "ingest_series",
     "list_series_markets",
     "load_release_calendar",
+    "lookalike_groups",
     "parse_market",
     "parse_trade",
     "trade_queries",
@@ -104,7 +118,15 @@ MARKET_MARGIN_S = 7 * 86400.0  # a draft calendar lists events up to a week outs
 
 _CALENDAR_COLUMNS = ("event_ticker", "release_time_utc", "source_url")
 _EPOCH = pd.Timestamp("1970-01-01", tz="UTC")
-_TAPE_COLUMNS = ["event", "market", "ts", "seq", "price", "size", "side", "trade_id"]
+_TAPE_COLUMNS = ["event", "market", "ts", "seq", "price", "size", "side", "trade_id", "endpoint"]
+
+# The trade endpoints, as named by TradeQuery and stored in the column trades.endpoint.
+HISTORICAL = "historical"  # GET /historical/trades
+LIVE = "live"  # GET /markets/trades
+BOTH = "both"  # a trade_id returned by the two
+ENDPOINT_FIELD = "_endpoint"  # the key under which fetch_series marks a record's endpoint
+_ENDPOINTS_OF = {HISTORICAL: frozenset({HISTORICAL}), LIVE: frozenset({LIVE}),
+                 BOTH: frozenset({HISTORICAL, LIVE})}
 
 
 class RejectedRecordError(ValueError):
@@ -143,7 +165,9 @@ def _time(record: Mapping[str, Any], name: str, reason: str) -> float:
 
 
 def parse_trade(record: Mapping[str, Any]) -> dict[str, Any]:
-    """One trade record as ``ts``, ``price``, ``size``, ``side``, ``trade_id``, ``is_block_trade``.
+    """One trade record as ``ts``, ``price``, ``size``, ``side``, ``trade_id``, ``is_block_trade``,
+    ``block_flag_missing`` and ``endpoint`` (the mark :func:`fetch_series` put under
+    :data:`ENDPOINT_FIELD`, :data:`HISTORICAL` or :data:`LIVE`; None for an unmarked record).
 
     ``side`` is +1 if ``taker_outcome_side`` is ``yes`` (the taker is long YES: it bought YES or
     sold NO) and -1 if it is ``no``; only when that field is absent is the deprecated
@@ -173,6 +197,7 @@ def parse_trade(record: Mapping[str, Any]) -> dict[str, Any]:
         raise RejectedRecordError("bad_side", f"taker side is {taker!r}")
     trade_id = record.get("trade_id")
     block = record.get("is_block_trade")
+    endpoint = record.get(ENDPOINT_FIELD)
     return {
         "ts": ts,
         "price": price,
@@ -181,6 +206,7 @@ def parse_trade(record: Mapping[str, Any]) -> dict[str, Any]:
         "trade_id": None if trade_id in (None, "") else str(trade_id),
         "is_block_trade": block is True,
         "block_flag_missing": not isinstance(block, bool),
+        "endpoint": endpoint if endpoint in (HISTORICAL, LIVE) else None,
     }
 
 
@@ -387,6 +413,8 @@ class BuildReport:
     trades_in_dropped_markets: int = 0  # the trades left in a market dropped for too few
     trades_kept: int = 0
     trades_block_flag_missing: int = 0  # of the kept: the record has no is_block_trade field
+    trades_id_on_both_endpoints: int = 0  # of the repeated: trade_ids read from both endpoints
+    trades_lookalike_groups: int = 0  # of the kept: see lookalike_groups
 
     def __add__(self, other: BuildReport) -> BuildReport:
         if self.min_trades != other.min_trades:
@@ -403,7 +431,8 @@ class BuildReport:
         return total
 
     def summary(self) -> list[str]:
-        """The counts as lines of text, one for the markets and one for the trades."""
+        """The counts as lines of text: the markets, the trades, and the trades read from both
+        endpoints."""
 
         def detail(counts: dict[str, int]) -> str:
             return ", ".join(f"{n} {reason}" for reason, n in sorted(counts.items())) or "none"
@@ -421,6 +450,10 @@ class BuildReport:
             f"after the release, {self.trades_in_dropped_markets} in dropped markets; "
             f"kept {self.trades_kept} ({self.trades_block_flag_missing} without an "
             f"is_block_trade field)",
+            f"both trade endpoints: {self.trades_id_on_both_endpoints} trade_id returned by both "
+            f"(kept once); {self.trades_lookalike_groups} groups of kept trades with different "
+            f"trade_id and the same time, price, size and side, read from the two endpoints "
+            f"(all kept)",
         ]
 
 
@@ -437,11 +470,32 @@ def _release_times(calendar: pd.DataFrame) -> dict[str, float]:
     return dict(zip(calendar["event_ticker"], seconds.astype(float), strict=True))
 
 
+def lookalike_groups(trades: Iterable[Mapping[str, Any]]) -> int:
+    """The number of groups of two or more trades with the same ``market`` (when the trades have
+    the key), ``ts``, ``price``, ``size`` and ``side`` among which at least one was read from each
+    trade endpoint (``endpoint`` :data:`HISTORICAL`, :data:`LIVE` or :data:`BOTH`).
+
+    The trades are distinct trades (repeated ``trade_id`` already removed). Such a group can be one
+    trade that the two endpoints gave different ``trade_id`` values, counted twice, or genuine
+    trades that look alike; the count does not tell which.
+    """
+    groups: dict[tuple[Any, ...], tuple[int, frozenset[str]]] = {}
+    for t in trades:
+        key = (t.get("market"), t["ts"], t["price"], t["size"], t["side"])
+        n, seen = groups.get(key, (0, frozenset()))
+        groups[key] = (n + 1, seen | _ENDPOINTS_OF.get(t.get("endpoint"), frozenset()))
+    return sum(n >= 2 and seen == _ENDPOINTS_OF[BOTH] for n, seen in groups.values())
+
+
 def _clean_trades(
     records: Iterable[Mapping[str, Any]], release_ts: float, report: BuildReport
 ) -> list[dict[str, Any]]:
-    """The trades of one market that pass the trade rules, sorted by (``ts``, ``trade_id``)."""
-    seen: set[str] = set()
+    """The trades of one market that pass the trade rules, sorted by (``ts``, ``trade_id``).
+
+    A repeated ``trade_id`` keeps the first record; if the repeat came from the other endpoint,
+    the first record's ``endpoint`` becomes :data:`BOTH` and the id is counted once.
+    """
+    first: dict[str, dict[str, Any]] = {}
     kept: list[dict[str, Any]] = []
     for record in records:
         report.trades_in += 1
@@ -451,10 +505,15 @@ def _clean_trades(
             _count(report.trades_rejected, rejection.reason)
             continue
         if trade["trade_id"] is not None:
-            if trade["trade_id"] in seen:
+            earlier = first.get(trade["trade_id"])
+            if earlier is not None:
                 report.trades_duplicate += 1
+                if earlier["endpoint"] in (HISTORICAL, LIVE) and trade["endpoint"] not in (
+                        None, earlier["endpoint"]):
+                    report.trades_id_on_both_endpoints += 1
+                    earlier["endpoint"] = BOTH
                 continue
-            seen.add(trade["trade_id"])
+            first[trade["trade_id"]] = trade
         if trade["is_block_trade"]:
             report.trades_block += 1
         elif trade["ts"] >= release_ts:
@@ -479,7 +538,8 @@ def build_dataset(
     ``trades_records_by_market`` maps a market ticker to its trade records; ``calendar`` is the
     frame of :func:`load_release_calendar`; the window is in Unix seconds, ``window_start`` inside
     and ``window_end`` outside. The filters and their order are in the module docstring. The
-    frames are those of the data contract (``tape`` has one more column, ``trade_id``, and
+    frames are those of the data contract (``tape`` has two more columns, ``trade_id`` and
+    ``endpoint``, and
     ``markets`` two, ``price_level_structure`` and ``price_ranges``, which ``panel.write_dataset``
     stores and ``panel.read_dataset`` does not return) in the order
     ``panel.read_dataset`` gives: tape by (market, ts, seq), events by (release, event), markets by
@@ -516,6 +576,7 @@ def build_dataset(
         report.markets_outcome_missing += market["outcome"] is None
         report.markets_scalar_result += market["result"] == "scalar"
         report.trades_block_flag_missing += sum(t["block_flag_missing"] for t in trades)
+        report.trades_lookalike_groups += lookalike_groups(trades)
     return (*_frames(kept_markets, kept_trades), report)
 
 
@@ -564,6 +625,7 @@ def _frames(
             "size": np.array([t["size"] for _, _, _, t in rows], dtype=np.float64),
             "side": np.array([t["side"] for _, _, _, t in rows], dtype=np.int8),
             "trade_id": [t["trade_id"] for _, _, _, t in rows],
+            "endpoint": pd.Series([t["endpoint"] for _, _, _, t in rows], dtype=object),
         }
     )[_TAPE_COLUMNS]
     return tape, markets_frame, events_frame
@@ -602,10 +664,10 @@ def trade_queries(release_ts: float, cutoff_ts: float) -> list[TradeQuery]:
     """
     last = math.ceil(release_ts)
     if release_ts <= cutoff_ts:
-        return [TradeQuery("historical", None, last)]
+        return [TradeQuery(HISTORICAL, None, last)]
     return [
-        TradeQuery("historical", None, math.ceil(cutoff_ts)),
-        TradeQuery("live", math.floor(cutoff_ts) - 1, last),
+        TradeQuery(HISTORICAL, None, math.ceil(cutoff_ts)),
+        TradeQuery(LIVE, math.floor(cutoff_ts) - 1, last),
     ]
 
 
@@ -720,9 +782,11 @@ def fetch_series(
 
     The listing is :func:`list_series_markets`; the markets are sorted by
     :func:`classify_markets`; the trades of a wanted market are read from the endpoint or endpoints
-    of :func:`trade_queries` for ``cutoff.trades_created_ts``. A generator: no trade of a market is
-    requested before the consumer asks for it, so a consumer that writes each market to the
-    database before asking for the next loses at most one market if the run is interrupted.
+    of :func:`trade_queries` for ``cutoff.trades_created_ts``, each record marked with its endpoint
+    under :data:`ENDPOINT_FIELD` (a copy: the client's records are not changed). A generator: no
+    trade of a market is requested before the consumer asks for it, so a consumer that writes each
+    market to the database before asking for the next loses at most one market if the run is
+    interrupted.
     """
     for item in classify_markets(
         list_series_markets(client, series), calendar, window, loaded=loaded
@@ -735,10 +799,11 @@ def fetch_series(
         for query in trade_queries(item.release_ts, cutoff.trades_created_ts):
             read = (
                 client.iter_historical_trades
-                if query.endpoint == "historical"
+                if query.endpoint == HISTORICAL
                 else client.iter_trades
             )
-            trades.extend(read(ticker=ticker, min_ts=query.min_ts, max_ts=query.max_ts))
+            records = read(ticker=ticker, min_ts=query.min_ts, max_ts=query.max_ts)
+            trades.extend({**record, ENDPOINT_FIELD: query.endpoint} for record in records)
         yield Fetched(item.market, trades, WANTED)
 
 

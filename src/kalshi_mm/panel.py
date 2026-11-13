@@ -18,7 +18,8 @@ Columns of a frame that the tables do not have, such as the ``latent_*`` columns
 tape, are ignored and never stored, so the analysis cannot read them from the database. The
 exceptions describe where a row of Kalshi's API came from, and :func:`read_dataset` returns none of
 them: ``trade_id`` (Kalshi's identifier of a trade), stored when the tape has it, with a unique
-index that refuses a second trade with the same identifier in a market; and the market fields
+index that refuses a second trade with the same identifier in a market; ``endpoint``, the trade
+endpoint a trade was read from (``historical``, ``live`` or ``both``); and the market fields
 ``price_level_structure`` and ``price_ranges`` (the price grid of the market, ``price_ranges`` as
 the JSON text of the list the API gave), stored when the markets frame has them.
 
@@ -97,6 +98,7 @@ CREATE TABLE IF NOT EXISTS trades (
     size     REAL    NOT NULL CHECK (typeof(size) = 'real' AND size > 0),
     side     INTEGER NOT NULL CHECK (side IN (-1, 1)),
     trade_id TEXT,
+    endpoint TEXT CHECK (endpoint IN ('historical', 'live', 'both')),  -- NULL for synthetic rows
     PRIMARY KEY (market, ts, seq)
 ) WITHOUT ROWID;
 
@@ -116,7 +118,7 @@ _EVENT_COLUMNS = ("event", "release_ts", "series")
 _MARKET_COLUMNS = ("market", "event", "outcome", "open_ts", "close_ts")
 _TAPE_COLUMNS = ("event", "market", "ts", "seq", "price", "size", "side")
 # Columns added after the first version of the schema, by table: an older database lacks them.
-_ADDED_COLUMNS = {"markets": ("price_level_structure", "price_ranges")}
+_ADDED_COLUMNS = {"markets": ("price_level_structure", "price_ranges"), "trades": ("endpoint",)}
 _CHUNK_ROWS = 50_000  # rows converted to Python objects at a time
 
 _UPSERT_EVENT = """
@@ -131,7 +133,8 @@ ON CONFLICT (market) DO UPDATE SET event = excluded.event, outcome = excluded.ou
     price_level_structure = excluded.price_level_structure, price_ranges = excluded.price_ranges
 """
 _INSERT_TRADE = """
-INSERT INTO trades (market, ts, seq, price, size, side, trade_id) VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO trades (market, ts, seq, price, size, side, trade_id, endpoint)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -247,6 +250,7 @@ def _check_events_of_trades(tape: pd.DataFrame, markets: pd.DataFrame) -> None:
 def _trade_rows(tape: pd.DataFrame) -> Iterator[list[tuple[object, ...]]]:
     """The trades as rows of Python objects for ``executemany``, one chunk at a time."""
     ids = _optional_text(tape, "trade_id")
+    endpoints = _optional_text(tape, "endpoint")
     for start in range(0, len(tape), _CHUNK_ROWS):
         part = tape.iloc[start : start + _CHUNK_ROWS]
         yield list(
@@ -258,6 +262,7 @@ def _trade_rows(tape: pd.DataFrame) -> Iterator[list[tuple[object, ...]]]:
                 _floats(part["size"], "size"),
                 _integers(part["side"], "side"),
                 ids[start : start + _CHUNK_ROWS],
+                endpoints[start : start + _CHUNK_ROWS],
                 strict=True,
             )
         )

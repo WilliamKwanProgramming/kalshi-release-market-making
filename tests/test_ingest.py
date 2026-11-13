@@ -48,7 +48,7 @@ RELEASE_TS = float(calendar.timegm((2026, 10, 24, 12, 30, 0)))  # 1792845000.0
 EVENT = "KXCPI-26OCT"
 MARKET = "KXCPI-26OCT-T0.3"
 WINDOW = {"window_start": RELEASE_TS - 86400.0, "window_end": RELEASE_TS + 86400.0}
-TAPE_COLUMNS = ["event", "market", "ts", "seq", "price", "size", "side", "trade_id"]
+TAPE_COLUMNS = ["event", "market", "ts", "seq", "price", "size", "side", "trade_id", "endpoint"]
 OTHER = "KXCPI-26OCT-T0.4"
 
 
@@ -796,10 +796,78 @@ def test_reports_add_field_by_field_and_merge_reason_counts():
 def test_the_summary_lines_state_the_counts(tmp_path):
     trades = many_trades(50) + [trade_record(300, price="1.0"), trade_record(301, block=True)]
     _, _, _, report = build(tmp_path, [market_record()], {MARKET: trades})
-    markets_line, trades_line = report.summary()
+    markets_line, trades_line, endpoints_line = report.summary()
     assert "1 read" in markets_line and "kept 1" in markets_line
     assert "52 read" in trades_line and "1 price_outside_0_1" in trades_line
     assert "1 block trades" in trades_line and "kept 50" in trades_line
+    assert endpoints_line.startswith("both trade endpoints: 0 trade_id returned by both")
+    assert "; 0 groups of kept trades" in endpoints_line
+
+
+# --------------------------------------------------------- trades read from both endpoints
+def marked(record, endpoint):
+    """A trade record as fetch_series passes it on: marked with the endpoint it came from."""
+    return {**record, ingest.ENDPOINT_FIELD: endpoint}
+
+
+def test_an_unmarked_record_has_no_endpoint_and_a_marked_one_keeps_its_mark():
+    assert parse_trade(trade_record())["endpoint"] is None
+    assert parse_trade(marked(trade_record(), "historical"))["endpoint"] == "historical"
+    assert parse_trade(marked(trade_record(), "live"))["endpoint"] == "live"
+    assert parse_trade(marked(trade_record(), "both"))["endpoint"] is None  # not a read mark
+
+
+def test_one_trade_id_from_both_endpoints_is_kept_once_marked_both_and_counted(tmp_path):
+    trades = [marked(t, "historical") for t in many_trades(50)]
+    again = marked(dict(trades[7]), "live")  # the same trade from the live endpoint
+    third = marked(dict(trades[7]), "live")  # and once more: still one id on both endpoints
+    tape, _, _, report = build(tmp_path, [market_record()], {MARKET: [*trades, again, third]})
+    assert len(tape) == 50 and report.trades_duplicate == 2
+    assert report.trades_id_on_both_endpoints == 1 and report.trades_lookalike_groups == 0
+    assert tape.loc[tape["trade_id"] == "t00007", "endpoint"].tolist() == ["both"]
+    assert (tape["endpoint"] == "historical").sum() == 49
+    assert_report_adds_up(report)
+
+
+def test_a_repeat_from_the_same_endpoint_is_not_counted_as_both(tmp_path):
+    trades = [marked(t, "live") for t in many_trades(50)]
+    tape, _, _, report = build(tmp_path, [market_record()], {MARKET: [*trades, trades[3]]})
+    assert report.trades_duplicate == 1 and report.trades_id_on_both_endpoints == 0
+    assert set(tape["endpoint"]) == {"live"}
+
+
+def test_different_ids_with_identical_fields_from_the_two_endpoints_are_kept_and_counted(tmp_path):
+    trades = [marked(t, "historical") for t in many_trades(50)]
+    twin = marked({**trades[4], "trade_id": "other-id"}, "live")
+    tape, _, _, report = build(tmp_path, [market_record()], {MARKET: [*trades, twin]})
+    assert len(tape) == 51 and report.trades_duplicate == 0
+    assert report.trades_lookalike_groups == 1 and report.trades_id_on_both_endpoints == 0
+    # a twin that differs in one field (size, price, side or time) is no group
+    for change in ({"count_fp": "11.00"}, {"yes_price_dollars": "0.5700"},
+                   {"taker_outcome_side": "no"}, {"created_time": iso(9999.0)}):
+        _, _, _, report = build(tmp_path, [market_record()],
+                                {MARKET: [*trades, {**twin, **change}]})
+        assert report.trades_lookalike_groups == 0, change
+
+
+def test_identical_fields_within_one_endpoint_are_kept_and_not_counted(tmp_path):
+    trades = [marked(t, "live") for t in many_trades(50)]
+    twins = [{**trades[4], "trade_id": "other-id"}, {**trades[4], "trade_id": "third-id"}]
+    tape, _, _, report = build(tmp_path, [market_record()], {MARKET: [*trades, *twins]})
+    assert len(tape) == 52 and report.trades_lookalike_groups == 0
+
+
+def test_lookalike_groups_counts_groups_not_trades_and_needs_both_endpoints():
+    base = {"ts": 1.0, "price": 0.5, "size": 2.0, "side": 1}
+    h, live, both = ({**base, "endpoint": e} for e in ("historical", "live", "both"))
+    assert ingest.lookalike_groups([h, live]) == 1
+    assert ingest.lookalike_groups([h, live, {**live}]) == 1  # three trades, one group
+    assert ingest.lookalike_groups([h, {**h}]) == 0
+    assert ingest.lookalike_groups([both, {**h}]) == 1  # the id on both counts as each
+    assert ingest.lookalike_groups([both]) == 0  # one trade is no group
+    assert ingest.lookalike_groups([h, {**base, "endpoint": None}]) == 0
+    assert ingest.lookalike_groups([{**h, "market": "A"}, {**live, "market": "B"}]) == 0
+    assert ingest.lookalike_groups([h, live, {**h, "side": -1}, {**live, "side": -1}]) == 2
 
 
 # ------------------------------------------------------------------- the fake endpoints
@@ -841,7 +909,8 @@ class FakeApi:
     ``live_markets`` and ``historical_markets`` map a series to its market records, ``trades`` maps
     a ticker to its trade records. The historical trade endpoint serves the trades created before
     ``CUTOFF_TS`` and the live one those created at or after it (``overlap``: both serve a trade
-    created exactly at the cutoff). ``min_ts`` and ``max_ts`` are inclusive, or exclusive with
+    created exactly at the cutoff; with ``live_id_suffix`` the live endpoint gives that trade
+    another ``trade_id``). ``min_ts`` and ``max_ts`` are inclusive, or exclusive with
     ``strict_bounds`` (the documentation does not say which), and the newest trades come first. A
     page holds at most ``page_size`` records whatever ``limit`` says. ``cutoffs``
     lists the answers of the cutoff endpoint, the last one repeated. After ``fail_after`` requests
@@ -849,10 +918,12 @@ class FakeApi:
     """
 
     def __init__(self, live_markets, historical_markets, trades, *, cutoffs=(CUTOFFS,),
-                 page_size=3, overlap=False, strict_bounds=False, fail_after=None):
+                 page_size=3, overlap=False, strict_bounds=False, fail_after=None,
+                 live_id_suffix=""):
         self.live_markets, self.historical_markets = live_markets, historical_markets
         self.trades, self.cutoffs, self.page_size = trades, list(cutoffs), page_size
         self.overlap, self.strict_bounds, self.fail_after = overlap, strict_bounds, fail_after
+        self.live_id_suffix = live_id_suffix
         self.urls = []
 
     @staticmethod
@@ -890,6 +961,8 @@ class FakeApi:
             held = ts < CUTOFF_TS if path == "/historical/trades" else ts >= CUTOFF_TS
             inside = low < ts < high if self.strict_bounds else low <= ts <= high
             if inside and (held or (self.overlap and ts == CUTOFF_TS)):
+                if path == "/markets/trades" and ts == CUTOFF_TS and self.live_id_suffix:
+                    record = {**record, "trade_id": record["trade_id"] + self.live_id_suffix}
                 found.append((ts, record))
         found.sort(key=lambda pair: (pair[0], pair[1]["trade_id"]), reverse=True)
         return [record for _, record in found]
@@ -1216,6 +1289,34 @@ def test_a_trade_on_both_endpoints_at_the_cutoff_is_stored_once(tmp_path, db):
     assert_stored(db, world)
     # O3 and O4 each have a trade created exactly at the cutoff: read twice, counted once
     assert summary.report.trades_in == 244 and summary.report.trades_duplicate == 3
+    assert summary.report.trades_id_on_both_endpoints == 2
+    assert summary.report.trades_lookalike_groups == 0
+    stored = dict(db.execute("SELECT trade_id, endpoint FROM trades WHERE market IN (?, ?)",
+                             (O3, O4)).fetchall())
+    at_cutoff = {f"{O3}-30", f"{O4}-25"}  # the trades created exactly at the cutoff
+    assert {k for k, v in stored.items() if v == "both"} == at_cutoff
+    assert {v for k, v in stored.items() if k not in at_cutoff} == {"historical", "live"}
+
+
+def test_where_each_stored_trade_was_read_from(tmp_path, db):
+    run_ingest(db, tmp_path, make_api(canned_world()))
+    got = dict(((m, e), n) for m, e, n in db.execute(
+        "SELECT market, endpoint, COUNT(*) FROM trades GROUP BY market, endpoint"))
+    # September is before the cutoff; October has 30 (25) trades before it and 31 (25) at or after
+    assert got == {(S3, "historical"): 60, (S4, "historical"): 55, (O3, "historical"): 30,
+                   (O3, "live"): 31, (O4, "historical"): 25, (O4, "live"): 25}
+
+
+def test_a_trade_with_another_id_on_each_endpoint_is_kept_twice_and_counted(tmp_path, db):
+    world = canned_world()
+    summary = run_ingest(db, tmp_path, make_api(world, overlap=True, live_id_suffix="-live"))
+    r = summary.report
+    assert r.trades_id_on_both_endpoints == 0 and r.trades_duplicate == 1  # S3's own repeat
+    assert r.trades_lookalike_groups == 2 and r.trades_kept == 228  # one extra in O3 and in O4
+    twins = db.execute("SELECT market, trade_id, endpoint FROM trades WHERE ts = ? "
+                       "ORDER BY market, trade_id", (CUTOFF_TS,)).fetchall()
+    assert twins == [(O3, f"{O3}-30", "historical"), (O3, f"{O3}-30-live", "live"),
+                     (O4, f"{O4}-25", "historical"), (O4, f"{O4}-25-live", "live")]
 
 
 def test_the_price_grid_of_each_market_is_stored_and_not_returned(tmp_path, db):
@@ -1375,6 +1476,8 @@ def test_a_run_prints_the_agreement_notice_and_the_counts_and_stores_the_data(sc
     assert ("KXCPI: 9 market records: 4 out of scope, 0 already in the database, 5 fetched, "
             "4 stored") in text
     assert "markets: 9 read" in text and "trades: 242 read" in text and "kept 226" in text
+    assert "both trade endpoints: 0 trade_id returned by both" in text
+    assert "all series (1), read in this run:" in text
     assert text.splitlines()[-1] == f"done; the database is {tmp_path / 'k.sqlite'}"
     with closing(sqlite3.connect(tmp_path / "k.sqlite")) as conn:
         assert_stored(conn, canned_world())
@@ -1394,6 +1497,17 @@ def test_several_series_are_fetched_in_turn(script, tmp_path):
     status, text = run_cli(script, tmp_path, "--series", "KXCPI", "KXU3")
     assert status == 0 and "KXCPI: 9 market records" in text and "KXU3: 0 market records" in text
     assert "KXU3: no market was stored" in text and "KXCPI: no market was stored" not in text
+    total = text.split("all series (2), read in this run:")[1]
+    assert "markets: 9 read" in total and "kept 226" in total
+
+
+def test_the_counts_of_both_endpoints_are_printed_per_series_and_in_total(script, tmp_path):
+    api = make_api(canned_world(), overlap=True, live_id_suffix="-live")
+    status, text = run_cli(script, tmp_path, transport=api)
+    lines = [line for line in text.splitlines() if "both trade endpoints" in line]
+    assert len(lines) == 2  # the series, then the total
+    assert all("0 trade_id returned by both" in line and "; 2 groups of kept trades" in line
+               for line in lines)
 
 
 def test_running_the_same_command_again_resumes(script, tmp_path):

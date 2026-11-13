@@ -122,10 +122,12 @@ def _dry_run(args: argparse.Namespace, window: ingest.Window, calendar: pd.DataF
 def _fetch(args: argparse.Namespace, window: ingest.Window, calendar: pd.DataFrame,
            client: KalshiClient, out: Callable[[str], None]) -> int:
     args.db.parent.mkdir(parents=True, exist_ok=True)
+    total = ingest.BuildReport(min_trades=args.min_trades)
     with closing(sqlite3.connect(args.db)) as conn:
         for series in args.series:
             summary = ingest.ingest_series(conn, client, series, calendar, window,
                                            min_trades=args.min_trades, log=out)
+            total += summary.report
             out(f"{series}: {summary.listed} market records: {summary.out_of_scope} out of "
                 f"scope, {summary.already_loaded} already in the database, {summary.fetched} "
                 f"fetched, {summary.written} stored")
@@ -140,6 +142,9 @@ def _fetch(args: argparse.Namespace, window: ingest.Window, calendar: pd.DataFra
                     f"{ingest.utc_text(summary.cutoff_after.trades_created_ts)}): trades created "
                     "between the two may be missing for markets read after it moved; delete "
                     "those markets, or the database, and run again")
+    out(f"all series ({len(args.series)}), read in this run:")
+    for line in total.summary():
+        out(f"  {line}")
     out(f"done; the database is {args.db}")
     return 0
 
