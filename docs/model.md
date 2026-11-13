@@ -152,6 +152,14 @@ does not react to the maker's quotes. Quote size is 10 contracts per side and no
 beyond a net position of 100 contracts. Inventory is held to resolution: at $T_e$ each contract
 pays $y$.
 
+Three properties follow from the one-second latency and the strict comparison, and tests check
+them (`tests/test_backtest.py`). A decision does not see the fills of the second before its quotes
+go live, so the inventory can pass the position limit by up to two quote sizes. A quote decided
+just before the pull window of `pull_only` stays live for one second into it. And the through rule
+fills the maker only after the price has moved through its quote, so in a world without informed
+trading `always_on` earns nothing under it (its gross profit is not above zero by more than two
+standard errors), where under the touch rule it is not below zero by more than two.
+
 Kalshi's schedule of 7 July 2026 charges, per fill of $C$ contracts at price $P$, a taker fee
 $\lceil 0.07\,C\,P(1-P)\rceil$ and a maker fee $\lceil 0.0175\,C\,P(1-P)\rceil$, rounded up to
 the next 0.0001 USD, with multiplier 1 for the CPI, payrolls, GDP, unemployment, Fed-rate and
