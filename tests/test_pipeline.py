@@ -37,6 +37,7 @@ from kalshi_mm.protocol import (
     PAIRS,
     PRIMARY_PAIR,
     Results,
+    p2_pricing,
     paired_mean,
     prepare,
     run_protocol,
@@ -220,6 +221,40 @@ def test_the_sensitivity_runs_of_p2_change_one_setting_of_the_quote_parameters(r
         pnl = _per_release(frame, "pnl")
         diff = pnl[PRIMARY_PAIR[0]] - pnl[PRIMARY_PAIR[1]]
         assert p2["sensitivity"][name] == paired_mean(diff.to_numpy(), settings)
+
+
+def _paired(world):
+    """The world with its events in pairs: the second event of a pair is moved to the release
+    time of the first, so that the two merge into one release with two markets."""
+    tape, markets, events = world.tape.copy(), world.markets.copy(), world.events.copy()
+    release = events.set_index("event")["release_ts"].to_dict()
+    ids = list(events["event"])
+    for first, second in zip(ids[0::2], ids[1::2], strict=False):
+        shift = release[first] - release[second]
+        tape.loc[tape["event"] == second, "ts"] += shift
+        markets.loc[markets["event"] == second, ["open_ts", "close_ts"]] += shift
+        events.loc[events["event"] == second, "release_ts"] = release[first]
+    return tape, markets, events
+
+
+def test_a_release_with_two_markets_adds_up_the_profit_of_its_markets(world):
+    settings = with_overrides(DEFAULT, SMALL)
+    ds = prepare(*_paired(world), settings)
+    assert ds.counts["events"] == 26 and ds.counts["releases"] == 13
+    p2 = p2_pricing(ds, settings)
+    frame = p2["frame"]
+    assert (frame.groupby(["event", "policy"]).size() == 2).all()
+    evaluated = frame[frame["evaluated"]]
+    total, average = {}, {}
+    for (event, policy), part in evaluated.groupby(["event", "policy"]):
+        total[event, policy] = sum(part["pnl"])
+        average[event, policy] = sum(part["pnl"]) / len(part)
+    events = sorted({event for event, _ in total})
+    a, b = PRIMARY_PAIR
+    diff = np.array([total[e, a] - total[e, b] for e in events])
+    assert len(events) == 13 - settings.quote.min_history_events
+    assert p2["primary"] == paired_mean(diff, settings)
+    assert abs(diff.mean() - np.mean([average[e, a] - average[e, b] for e in events])) > 1e-9
 
 
 def test_p3_is_the_skill_of_the_walk_forward_recalibration(run):
