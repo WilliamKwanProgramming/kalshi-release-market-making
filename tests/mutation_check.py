@@ -1289,6 +1289,10 @@ mutant("protocol: a test with exactly the minimum number of releases is explorat
 mutant("protocol: P3 is labelled exploratory by a count of zero releases",
        "tests/test_protocol.py tests/test_pipeline.py", "protocol.py",
        USED, "used = {\"P1\": n_releases, \"P2\": p2[\"n_releases\"], \"P3\": 0}")
+mutant("protocol: the primary pair is flat_matched minus release_aware",
+       PIPE, "protocol.py",
+       "PRIMARY_PAIR = (\"release_aware\", \"flat_matched\")",
+       "PRIMARY_PAIR = (\"flat_matched\", \"release_aware\")")
 mutant("backtest study: the primary pair is reversed",
        STUDY, STUDY_FILE,
        "PRIMARY = (\"release_aware\", \"flat_matched\")",
