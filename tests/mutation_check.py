@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Mutation check: does the test suite notice deliberate bugs?
 
-Copies src/, tests/ and pyproject.toml into a temporary directory, then applies ONE deliberate
-bug ("mutant") at a time to the copy and runs pytest there. A mutant is "caught" if at least one
-test fails. The working tree is never modified. The mutants are bugs that would silently produce
-plausible numbers: a sign, an off-by-one, a wrong tick direction, look-ahead, a wrong horizon or a
-unit error. To save time a mutant runs only the test files that exercise the changed module
-(listed with it); the baseline runs the whole suite. Exits with status 1 if a mutant survives or
-the baseline fails.
+Copies src/, tests/, scripts/, docs/ and pyproject.toml into a temporary directory, then applies
+ONE deliberate bug ("mutant") at a time to the copy and runs pytest there. A mutant is "caught" if
+at least one test fails. The working tree is never modified. The mutants are bugs that would
+silently produce plausible numbers: a sign, an off-by-one, a wrong tick direction, look-ahead, a
+wrong horizon or a unit error. To save time a mutant runs only the test files that exercise the
+changed module (listed with it); the baseline runs the whole suite. Exits with status 1 if a
+mutant survives or the baseline fails.
 
 Usage: python3 tests/mutation_check.py [--out results/mutation_check.txt]
 """
@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-COPY = ["src", "tests", "pyproject.toml", "docs"]
+COPY = ["src", "tests", "pyproject.toml", "docs", "scripts"]
 S = "src/kalshi_mm/"
 
 # (name, test files to run, [(file, text that must occur exactly once, replacement), ...])
