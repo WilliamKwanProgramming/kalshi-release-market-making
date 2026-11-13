@@ -253,6 +253,21 @@ mutant("run_real: the tag is not checked", PIPE, "run_real.py",
        "if not args.no_tag_check:", "if False:")
 mutant("run_real: files that are not tracked are ignored by the tag check", RUN, "run_real.py",
        "files = sorted(set(changed) | set(untracked))", "files = sorted(set(changed))")
+RR = "tests/test_run_real.py"
+mutant("run_real: the tolerance of the tick test is a hundred times larger", RR, "run_real.py",
+       "TICK_TOLERANCE = 1e-9  # USD", "TICK_TOLERANCE = 1e-7  # USD")
+mutant("run_real: the tick test rounds down", RR, "run_real.py",
+       "tick * np.round(p / tick)", "tick * np.floor(p / tick)")
+mutant("run_real: the trades on live, not on both endpoints, are counted", RR, "run_real.py",
+       '(part["endpoint"] == "both").sum()', '(part["endpoint"] == "live").sum()')
+mutant("run_real: a dirty fetch is not a departure", RR, "run_real.py",
+       'r["git_dirty"] == "true"', 'r["git_dirty"] == "false"')
+mutant("run_real: a commit that differs from the tag is accepted", RR, "run_real.py",
+       "if diff.returncode == 1:", "if False:")
+mutant("run_real: the departures of the fetch record are not written", RR, "run_real.py",
+       "extra: list[str] = provenance_problems(runs)", "extra: list[str] = []")
+mutant("report: the table of the checks of the data is left out", RR, "protocol_report.py",
+       "parts.append(_checks_table(data_checks, prefix, label))", "pass")
 
 
 # ---- the markout panel computed in SQL (panel.py)
@@ -318,6 +333,17 @@ mutant("panel: the mid is the last buy print alone", PANEL, "panel.py",
 mutant("panel: the index is not the row of the whole tape", PANEL, "panel.py",
        "ROW_NUMBER() OVER (ORDER BY t.market, t.ts, t.seq) - 1",
        "ROW_NUMBER() OVER (ORDER BY t.market, t.ts, t.seq)")
+mutant("panel: the endpoint of a trade is not stored", PANEL, "panel.py",
+       "endpoints[start : start + _CHUNK_ROWS],", "[None] * len(part),")
+mutant("panel: a database of the older schema is accepted", PANEL, "panel.py",
+       "    if problem:\n        raise OldSchemaError(problem)",
+       "    if False:\n        raise OldSchemaError(problem)")
+mutant("panel: a second fetch replaces the keys of the first", PANEL, "panel.py",
+       'conn.executemany("INSERT OR IGNORE INTO meta',
+       'conn.executemany("INSERT OR REPLACE INTO meta')
+mutant("panel: the end of a later fetch replaces the first's", PANEL, "panel.py",
+       "if len(runs) == 1:\n            conn.execute(\"INSERT OR IGNORE",
+       "if True:\n            conn.execute(\"INSERT OR REPLACE")
 
 # ---- records from the API, the protocol filters and the fetch loop (ingest.py)
 ING = "tests/test_ingest.py"
@@ -331,7 +357,7 @@ mutant("ingest: a trade at the release is kept", ING, "ingest.py",
 mutant("ingest: a market with exactly the minimum number of trades is dropped", ING, "ingest.py",
        "if len(trades) < min_trades:", "if len(trades) <= min_trades:")
 mutant("ingest: a repeated trade_id is kept", ING, "ingest.py",
-       '            if trade["trade_id"] in seen:', "            if False:")
+       "            if earlier is not None:", "            if False:")
 mutant("ingest: a price of exactly 1 is accepted", ING, "ingest.py",
        "if not 0.0 < price < 1.0:", "if not 0.0 < price <= 1.0:")
 mutant("ingest: yes and no results are swapped", ING, "ingest.py",
@@ -347,11 +373,11 @@ mutant("ingest: a release exactly at the cutoff is read from both endpoints", IN
 mutant("ingest: the release bound of a query is rounded down", ING, "ingest.py",
        "last = math.ceil(release_ts)", "last = math.floor(release_ts)")
 mutant("ingest: the historical range ends at the rounded-down cutoff", ING, "ingest.py",
-       'TradeQuery("historical", None, math.ceil(cutoff_ts)),',
-       'TradeQuery("historical", None, math.floor(cutoff_ts)),')
+       'TradeQuery(HISTORICAL, None, math.ceil(cutoff_ts)),',
+       'TradeQuery(HISTORICAL, None, math.floor(cutoff_ts)),')
 mutant("ingest: the live range starts at the cutoff, not a second before", ING, "ingest.py",
-       'TradeQuery("live", math.floor(cutoff_ts) - 1, last),',
-       'TradeQuery("live", math.floor(cutoff_ts), last),')
+       'TradeQuery(LIVE, math.floor(cutoff_ts) - 1, last),',
+       'TradeQuery(LIVE, math.floor(cutoff_ts), last),')
 mutant("ingest: the archived record wins whenever it is settled", ING, "ingest.py",
        "elif ticker not in chosen or (_is_settled(record) and not _is_settled(chosen[ticker])):",
        "elif ticker not in chosen or _is_settled(record):")
@@ -363,6 +389,20 @@ mutant("ingest: the cutoff is not read again at the end of a run", ING, "ingest.
        "cutoff_after=client.historical_cutoff(),", "cutoff_after=cutoff,")
 mutant("ingest: a market with too few trades is written", ING, "ingest.py",
        "        if len(markets):", "        if True:")
+mutant("ingest: a repeat from the same endpoint counts as both", ING, "ingest.py",
+       'None, earlier["endpoint"]):', "None,):")
+mutant("ingest: the kept trade of an id on both endpoints is not marked both", ING, "ingest.py",
+       'earlier["endpoint"] = BOTH', "pass")
+mutant("ingest: the endpoint marks are swapped", ING, "ingest.py",
+       "ENDPOINT_FIELD: query.endpoint}",
+       "ENDPOINT_FIELD: LIVE if query.endpoint == HISTORICAL else HISTORICAL}")
+mutant("ingest: a look-alike group needs no trade from the other endpoint", ING, "ingest.py",
+       "n >= 2 and seen == _ENDPOINTS_OF[BOTH]", "n >= 2")
+mutant("ingest: look-alike trades may differ in size", ING, "ingest.py",
+       'key = (t.get("market"), t["ts"], t["price"], t["size"], t["side"])',
+       'key = (t.get("market"), t["ts"], t["price"], t["side"])')
+mutant("ingest: the price ranges are not kept", ING, "ingest.py",
+       '"price_ranges": None if ranges is None else json.dumps(ranges),', '"price_ranges": None,')
 
 # ---- the HTTP client (kalshi_api.py)
 API = "tests/test_kalshi_api.py"
@@ -394,6 +434,15 @@ script_mutant("fetch_kalshi: a dry run fetches", ING,
 script_mutant("fetch_kalshi: a draft calendar may have any name", ING,
               'and "draft" not in args.calendar_draft.name.lower():',
               "and False:")
+script_mutant("fetch_kalshi: the dirty flag is inverted", ING,
+              '"true" if status.stdout.strip() else "false"',
+              '"false" if status.stdout.strip() else "true"')
+script_mutant("fetch_kalshi: the end of a fetch is not recorded", ING,
+              "            panel.end_fetch_run(conn, finished_utc=utc_now())",
+              "            pass")
+script_mutant("fetch_kalshi: an unreadable commit is recorded as the empty text", ING,
+              "    if head.returncode != 0 or status.returncode != 0 or not head.stdout.strip():",
+              "    if False:")
 
 
 # ---- the recovery study (experiments/recovery.py)
