@@ -1194,12 +1194,15 @@ mutant("backtest study: the last two items of a list are joined without and",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
        "\", \".join(items[:-1]) + \" and \" + items[-1]",
        "\", \".join(items[:-1]) + \", \" + items[-1]")
+EXTRA_WINDOWS_TEST = (
+    "tests/test_backtest_study.py::"
+    "test_the_extra_windows_must_exist_and_differ_from_the_world_of_the_main_grid")
 mutant("backtest study: an empty list of extra windows is accepted",
-       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       EXTRA_WINDOWS_TEST, "experiments/backtest_study.py",
        "if not config.extra_windows:",
        "if config.extra_windows:")
 mutant("backtest study: an extra window equal to the world's is accepted",
-       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       EXTRA_WINDOWS_TEST, "experiments/backtest_study.py",
        "if config.world.window_hours in config.extra_windows:",
        "if config.world.window_hours not in config.extra_windows:")
 mutant("backtest study: B8 runs all five policies",
