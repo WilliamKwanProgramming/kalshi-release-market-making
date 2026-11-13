@@ -130,7 +130,12 @@ the variance still to be borne. The policies differ in $v$ and in the premium $h
 | `always_on` | $\sigma_p^2\tau_h$ with $\sigma_p = \hat\sigma\,m(1-m)$ | 0 | always |
 | `pull_only` | as `always_on` | 0 | none within 5 minutes of the release |
 | `pooled_premium` | $\sigma_p^2\tau_h + m(1-m)$ | $4m(1-m)\,\widehat{\mathrm{AS}}$, pooled over all minutes to release | always |
-| `release_aware` | $\sigma_p^2\tau_h + m(1-m)$ | $4m(1-m)\,\widehat{\mathrm{AS}}$ of the bucket containing $\tau$ | always |
+| `flat_matched` | as `pooled_premium` | $4m(1-m)\,\overline{\mathrm{AS}}$, the average of the bucket premiums over the refreshes of the quoting window (below) | always |
+| `release_aware` | as `pooled_premium` | $4m(1-m)\,\widehat{\mathrm{AS}}$ of the bucket containing $\tau$ | always |
+
+The last three add $m(1-m)$ to the variance, which `always_on` and `pull_only` do not, and that
+moves their reservation price; so the difference between either of them and one of the first two
+is the effect of the premium and of the added variance together.
 
 $\hat\sigma$ is the realized logit volatility of the mid proxy over the previous 2 hours of the
 same market, floored at the walk-forward average of earlier events. The adverse selection of a
@@ -139,8 +144,36 @@ value of $m(1-m)$ at $m = \tfrac12$ divided out: $\widehat{\mathrm{AS}}$ is the 
 $\mathrm{AS}_i / \big(4\,\hat m_{t_i^-}(1-\hat m_{t_i^-})\big)$ over the trades of earlier
 events with $\hat m_{t_i^-}(1-\hat m_{t_i^-}) \ge 0.05$, floored at zero, and the quote uses
 $h_{\text{adv}} = \widehat{\mathrm{AS}} \cdot 4\,m(1-m)$. Until 20 earlier events exist, the
-premium is zero. The primary comparison is `release_aware` against `pooled_premium`, which differ
-only in whether the premium depends on minutes to release. The others are secondary.
+premium is zero. A bucket without a usable trade takes the pooled premium.
+
+The pooled premium is a mean over every trade of every earlier event, and the trades are not
+spread evenly over the clock: most are close to the release. The bucket premiums are applied by
+the clock, so every bucket counts for as long as it lasts in the quoting window. The two averages
+therefore differ in size even where the premium does not depend on time at all, and in the
+synthetic worlds the sign of `release_aware` minus `pooled_premium` follows that difference of
+size, not the dependence on time (tables B8 and B9 of the README). `flat_matched` removes the
+difference. With a quoting window of $W$ seconds and a refresh every $\rho$ seconds there are
+$J = \lceil W/\rho \rceil$ refreshes $j = 1, \dots, J$, and refresh $j$ is $\tau_j = (W -
+\rho\,(j-1))/60$ minutes before the release ($\tau_j = 720, 719, \dots, 1$ for 12 hours and 60
+seconds, so the buckets $(0,5]$, $(5,15]$, $(15,30]$, $(30,60]$, $(60,180]$, $(180,360]$ and
+$(360,\infty)$ hold 5, 10, 15, 30, 120, 180 and 360 refreshes). With $b(\tau)$ the bucket of
+$\tau$ and $\widehat{\mathrm{AS}}_b$ the premium of bucket $b$, estimated as above,
+
+$$\overline{\mathrm{AS}} = \frac1J \sum_{j=1}^{J} \widehat{\mathrm{AS}}_{b(\tau_j)}.$$
+
+It uses the same earlier events as $\widehat{\mathrm{AS}}$ and no data of the event being quoted;
+it is zero until 20 earlier events exist. It does not depend on which refreshes have a quote. The
+rule was written down before the results for it were generated and has no parameter that was
+tuned; the multiplier of the sweep in table B9 is not part of the policy.
+
+The primary comparison is `release_aware` against `flat_matched`: the same variance and, by
+construction, the same premium averaged over the refreshes of the quoting window, so they differ
+in when the premium is applied and not in how large it is on average. A positive difference says
+that, at the same average width, the premium by minutes to the release earns more than a flat
+one. It does not say that the premium measures informed trading: the buckets of the null world
+differ too (the trade surge and the price level), and every policy loses money in the synthetic
+worlds, where a wider quote loses less. The other pairs, among them `release_aware` against
+`pooled_premium`, are secondary.
 
 ## 7. Fills, fees and settlement
 
@@ -165,8 +198,10 @@ $\lceil 0.07\,C\,P(1-P)\rceil$ and a maker fee $\lceil 0.0175\,C\,P(1-P)\rceil$,
 the next 0.0001 USD, with multiplier 1 for the CPI, payrolls, GDP, unemployment, Fed-rate and
 Fed-decision series. The maker fee is charged when a resting order trades. The settlement fee is
 zero. The code takes the maker coefficient as a parameter: 0.0175 in the primary runs and 0 as
-a sensitivity. The per-order rounding accumulator and rebate in Kalshi's documentation can only
-lower fees and are not modelled.
+a sensitivity. The documentation also describes rounding to the granularity of the balance, a
+per-order accumulator and a rebate. They are not modelled, and the direction of their net effect on
+the fees is not established; the sweep with maker coefficient 0 (table B4 of the README) shows how
+far the conclusions depend on the fee.
 
 Net P&L of an event is $\sum (\text{cash from fills}) + \text{inventory} \times y - \text{fees}$.
 
@@ -176,8 +211,12 @@ The favourite-longshot bias is the pattern that low-priced contracts win less of
 price and high-priced contracts more often (Snowberg and Wolfers, 2010; Bürgi, Deng and Whelan,
 2025, report it on Kalshi). A price $p$ is recalibrated by $\hat p = \operatorname{sigmoid}(a + b\,
 \operatorname{logit} p)$ with $(a,b)$ fitted by logistic regression of $y$ on $\operatorname{logit} p$
-over earlier events only (expanding window, at least 50 events). The score is the Brier score
-(Brier, 1950) $\frac1n\sum(\hat p - y)^2$ and the skill is $\mathrm{BSS} = 1 - \mathrm{Brier}_{\text{recal}} /
+over earlier events only (expanding window, at least 50 events). A price taken $g$ hours before
+the release (24 hours in the protocol) is scored with a fit on the events whose release is strictly
+before that price time: the outcome of an event that is released after the price time and before
+the release being scored was not known when the price was observed, so it is left out (it makes no
+difference where the releases are more than $g$ hours apart, as in the synthetic worlds). The
+score is the Brier score (Brier, 1950) $\frac1n\sum(\hat p - y)^2$ and the skill is $\mathrm{BSS} = 1 - \mathrm{Brier}_{\text{recal}} /
 \mathrm{Brier}_{\text{raw}}$. Positive values mean that recalibration helps out of sample.
 
 ## 9. Inference

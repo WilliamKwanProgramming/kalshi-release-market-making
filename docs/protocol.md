@@ -64,21 +64,31 @@ contract per USD, $k = 100$ per USD, quote size 10, position limit 100, refresh 
 is below 0.03 or above 0.97. The first 20 releases (in order of $T_e$) are burn-in: they are run,
 because later premiums are estimated from them, but they are not part of the comparison. The
 quantity is the net settled P&L per release, summed over the release's markets, for `release_aware`
-minus `pooled_premium`, paired by release. The hypothesis is that the mean difference is positive. Also reported, not tested: `always_on` and `pull_only`, fills
-and cents per contract filled, each series, the two halves of the sample split at the median release
-date, the touch fill rule, and the maker fee coefficient 0.
+minus `flat_matched`, paired by release. `flat_matched` quotes one premium that is the average of
+the bucket premiums over the refreshes of the quoting window (`docs/model.md`, section 6), so the
+two policies quote the same premium on average and differ in when they quote it. The hypothesis is
+that the mean difference is positive. Also reported, not tested: every other pair of the five
+policies, among them `release_aware` minus `pooled_premium` (the pooled premium is an average over
+every trade of every earlier event and is not the same size as the average of the bucket premiums
+over the quoting window, so the sign of that difference follows the sizes; see the changes below),
+`always_on` and `pull_only`, fills and cents per contract filled, each series, the two halves of the
+sample split at the median release date, the touch fill rule, and the maker fee coefficient 0.
 
 **P3. Recalibration.** The skill $\mathrm{BSS}$ of the walk-forward logistic recalibration of the
 mid proxy at 24 hours before $T_e$ (prints up to and including that instant, none older than one
 hour; a market with no proxy then is left out of P3 and counted), against the raw proxy, pooled
 over markets with releases as clusters. Coefficients are refitted every 10 releases from at least
-50 earlier ones. The hypothesis is $\mathrm{BSS} > 0$. Reported, not tested: the
+50 earlier ones. A release enters a fit only if it took place strictly before the price time of the
+release being scored (24 hours before it): the outcome of a release in between was not known when
+the price was observed. The first release scored is the first one with at least 50 releases before
+its price time. The hypothesis is $\mathrm{BSS} > 0$. Reported, not tested: the
 fitted $(a, b)$ over time and the BSS by series.
 
 A test is "supported" only if its Holm-adjusted p-value is below 0.05. The p-value is one-sided:
 the share of bootstrap replications of the statistic that are at or below zero (the level at which
-the one-sided percentile interval stops excluding zero), never below 1/10,001. With fewer than 100
-releases in the sample, P1 and P2 are labelled exploratory whatever the p-values.
+the one-sided percentile interval stops excluding zero), never below 1/10,001. P1 and P2 are
+labelled exploratory, whatever the p-values, when fewer than 100 releases enter the test: the
+releases kept for P1 and the releases after the burn-in for P2. P3 is not labelled this way.
 
 ## What the repository may say afterwards
 
@@ -104,8 +114,32 @@ All were made before any real-data result existed.
 - 2026-11-13: the commit tag `real-run` replaces "the commit that contains this file", because the
   analysis code was written after this file; events with the same $T_e$ are merged into one
   release; the proxy rule for markets kept, the P3 price time, the burn-in of 20 releases and the
-  refit schedule are stated explicitly (they are the values in `docs/model.md`).
+  refit schedule are stated explicitly (the burn-in of 20 releases and the minimum of 50 releases
+  are also in `docs/model.md`; the other values are in this file and in `Settings` of
+  `src/kalshi_mm/protocol.py`).
 - 2026-11-13, after the synthetic world was built: the scaled $D$ and the $(5, 30]$ window were added
   to the quantities reported for P1, because on the synthetic world the surge of the trade rate and
   the level of the price change $D$ without a change of the informed share (`docs/model.md`
   section 5). The tested quantity and its hypothesis did not change.
+- 2026-11-13, after the synthetic backtest results and an independent review of the repository,
+  before any real data: the tested comparison of P2 changed from `release_aware` minus
+  `pooled_premium` to `release_aware` minus `flat_matched`. The review found that the first
+  comparison followed the average size of the premium and not whether the premium depends on the
+  time to the release. The pooled premium is an average over every trade of every earlier event;
+  the bucket premiums averaged over the quoting window by the clock are smaller (on the synthetic
+  planted world 1.65 against 2.80 cents per unit of $4m(1-m)$); every policy loses money per
+  contract there, so the policy that quotes wider loses less, and the sign of the difference
+  reversed when the pooled premium was scaled or the history lengthened (tables B8 and B9 of the
+  README). `flat_matched` is the flat premium with the same average size as the bucket premiums
+  over the quoting window, estimated from earlier events only. Its definition was written down
+  before the results for it were generated and was not tuned. `pooled_premium` stays as a policy
+  and its pair is reported. The hypothesis, the test (cluster bootstrap over releases, one-sided)
+  and the Holm family did not change. A "supported" P2 says that the premium by bucket earns more
+  than a flat premium of the same average size in this backtest; it does not say that the premium
+  measures informed trading.
+- 2026-11-13, same review: the exploratory label counts the releases that enter each test (for P2
+  the releases after the burn-in) and not the releases kept; and the P3 fit leaves out the
+  releases that took place between the price time and the release being scored (the first version
+  fitted on every earlier release, which used an outcome that was not known at the price time
+  when two releases are less than 24 hours apart). No synthetic result changes: the synthetic
+  releases are 168 hours apart.

@@ -6,8 +6,9 @@ For a fill of ``C`` contracts at YES price ``P`` the schedule of 7 July 2026 cha
 
 with ``coeff = 0.07`` for the taker and ``0.0175`` for the maker (resting order), and
 ``multiplier = 1`` for the CPI, payrolls, GDP, unemployment, Fed-rate and Fed-decision series. The
-fee is symmetric in ``P <-> 1 - P`` and zero at 0 and 1. The per-order rounding accumulator and
-rebate in Kalshi's documentation can only lower fees and are not modelled.
+fee is symmetric in ``P <-> 1 - P`` and zero at 0 and 1. The rounding to the granularity of the
+balance, the per-order accumulator and the rebate in Kalshi's documentation are not modelled, and
+the direction of their net effect on the fees is not established.
 """
 
 from __future__ import annotations
