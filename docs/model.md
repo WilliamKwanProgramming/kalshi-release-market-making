@@ -177,6 +177,36 @@ break-even sweep). They show nothing about whether adverse selection near releas
 Kalshi. That is a question for real data, with the protocol in `docs/protocol.md`; it has not
 been run.
 
+## 11. Parameters of the synthetic world
+
+`kalshi_mm.world.WorldParams` holds every parameter of the synthetic worlds of sections 2 and 3.
+Times are in hours unless the name says otherwise, prices in USD. The defaults give the planted
+profile of section 3; the null world differs only in `pi1 = 0`. The generator draws each event
+from its own random stream, so raising `n_events` does not change the first events.
+
+| field | default | meaning |
+|---|---|---|
+| `n_events` | 200 | number of release events, one binary market each |
+| `window_hours` | 12.0 | length of the trading window before each release $T_e$; every trade falls in it |
+| `sigma` | 0.2 | logit news volatility $\sigma$ per square-root hour (section 2) |
+| `x0_sd` | 1.0 | the initial log-odds $x_0$ are normal with mean 0 and this standard deviation |
+| `base_rate` | 10.0 | trades per hour far from the release |
+| `surge` | 20.0 | extra multiple of `base_rate` at the release: $\lambda_T(\tau) = \text{base\_rate}\,(1 + \text{surge}\;e^{-\tau/\text{surge\_hours}})$ |
+| `surge_hours` | 1.0 | decay time of the trade surge |
+| `pi0` | 0.05 | informed share $\pi_0$ of trades far from the release |
+| `pi1` | 0.20 | extra informed share at the release, $\pi(\tau) = \pi_0 + \pi_1 e^{-\tau/\tau_I}$; 0 is the null world |
+| `pi_hours` | 0.5 | decay time $\tau_I$ of the extra informed share |
+| `kappa` | 1.5 | margin $\kappa$ of the other makers on the log-odds spread (section 3): 1 is the zero-profit quote, above 1 leaves them a margin |
+| `tick` | 0.01 | price tick; $1/\text{tick}$ must be a whole number |
+| `mean_size` | 10.0 | mean contracts per trade (geometric on 1, 2, ..., at least 1) |
+| `event_spacing_hours` | 168.0 | hours between the releases of consecutive events |
+| `t0` | 1700000000.0 | Unix time of the release of event 0; event $e$ is released at $t_0 + 3600\,e\,$`event_spacing_hours` seconds |
+
+Event and market ids are `SYN-000000`, `SYN-000001`, and so on. The tape of a synthetic world
+also carries the columns `latent_mid_pre`, `latent_mid_post`, `latent_pi` and `latent_informed`,
+and the events frame the column `latent_x0`. Estimators, policies and the backtest must not read
+a column whose name starts with `latent_`; they exist for the recovery study and for tests.
+
 ## References
 
 See the README.
