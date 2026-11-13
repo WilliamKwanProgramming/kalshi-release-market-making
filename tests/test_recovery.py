@@ -741,6 +741,9 @@ def test_power_and_sample_size_tables_show_the_rates_and_the_sample_size(study):
     text = rc.tables_markdown(res)
     assert res.sample["raw_0_30"] == 12
     assert "| (a) raw D, near (0, 30] | 12 | 100% | 50% at n = 6 |" in text
+    first = power.assign(reject=0.9)
+    text = rc.tables_markdown(study._replace(power=first, sample=rc.sample_size(first)))
+    assert "| (a) raw D, near (0, 30] | 6 | 90% | no smaller size tried |" in text
     never = power.assign(reject=0.0)
     text = rc.tables_markdown(study._replace(power=never, sample=rc.sample_size(never)))
     assert "| (a) raw D, near (0, 30] | not reached (largest n tried 12) | 0% at n = 12 | |" in text

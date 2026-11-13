@@ -766,7 +766,7 @@ def _table_sample(res: RecoveryResults) -> list[str]:
             continue
         here = _lookup(power, "planted", e.key, n)
         smaller = sorted(s for s in d["sizes"] if s < n)
-        below = ("" if not smaller else
+        below = ("no smaller size tried" if not smaller else
                  f"{_share(_lookup(power, 'planted', e.key, smaller[-1]).reject)}% at "
                  f"n = {smaller[-1]}")
         lines.append(f"| {e.label} | {n} | {_share(here.reject)}% | {below} |")
