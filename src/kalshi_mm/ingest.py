@@ -12,7 +12,10 @@ Field mapping (the documentation these names come from is listed in docs/data.md
   ``close_time`` -> ``close_ts``;
 * market ``series_ticker`` if the record has it, else the event ticker up to its first hyphen
   -> ``series``;
-* market ``result`` -> ``outcome``: 1 for ``yes``, 0 for ``no``, missing for anything else.
+* market ``result`` -> ``outcome``: 1 for ``yes``, 0 for ``no``, missing for anything else;
+* market ``price_level_structure`` and ``price_ranges`` (the price grid: ranges of prices, each
+  with its ``step`` in USD) -> stored as given, ``price_ranges`` as JSON text; not used by the
+  analysis, which quotes on a grid of 0.01 USD (``docs/data.md``, Limitations).
 
 A record that cannot be read raises :class:`RejectedRecordError`; :func:`build_dataset` counts every
 rejection by reason in its report and drops nothing without counting it.
@@ -46,6 +49,7 @@ from __future__ import annotations
 
 import csv
 import datetime
+import json
 import math
 import sqlite3
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping
@@ -182,8 +186,9 @@ def parse_trade(record: Mapping[str, Any]) -> dict[str, Any]:
 
 def parse_market(record: Mapping[str, Any]) -> dict[str, Any]:
     """One market record as ``market``, ``event``, ``series``, ``outcome``, ``open_ts`` and
-    ``close_ts``, plus ``result`` (as given) and ``expected_expiration_ts`` (None when the record
-    has none or it cannot be read).
+    ``close_ts``, plus ``result`` (as given), ``expected_expiration_ts`` (None when the record
+    has none or it cannot be read), ``price_level_structure`` (the text as given, None when absent
+    or not text) and ``price_ranges`` (the JSON text of the value as given, None when absent).
 
     ``outcome`` is 1 if ``result`` is ``yes``, 0 if ``no`` and None for anything else: a market
     that has not settled has ``result`` empty, a scalar market has ``scalar``.
@@ -204,6 +209,8 @@ def parse_market(record: Mapping[str, Any]) -> dict[str, Any]:
         expected = parse_iso_time(record.get("expected_expiration_time"))
     except ValueError:
         expected = None
+    structure = record.get("price_level_structure")
+    ranges = record.get("price_ranges")
     return {
         "market": ticker,
         "event": event,
@@ -213,6 +220,8 @@ def parse_market(record: Mapping[str, Any]) -> dict[str, Any]:
         "open_ts": open_ts,
         "close_ts": close_ts,
         "expected_expiration_ts": expected,
+        "price_level_structure": structure if isinstance(structure, str) else None,
+        "price_ranges": None if ranges is None else json.dumps(ranges),
     }
 
 
@@ -470,8 +479,9 @@ def build_dataset(
     ``trades_records_by_market`` maps a market ticker to its trade records; ``calendar`` is the
     frame of :func:`load_release_calendar`; the window is in Unix seconds, ``window_start`` inside
     and ``window_end`` outside. The filters and their order are in the module docstring. The
-    frames are those of the data contract (``tape`` has one more column, ``trade_id``, which
-    ``panel.write_dataset`` stores and ``panel.read_dataset`` does not return) in the order
+    frames are those of the data contract (``tape`` has one more column, ``trade_id``, and
+    ``markets`` two, ``price_level_structure`` and ``price_ranges``, which ``panel.write_dataset``
+    stores and ``panel.read_dataset`` does not return) in the order
     ``panel.read_dataset`` gives: tape by (market, ts, seq), events by (release, event), markets by
     (release of the event, event, market). An event is kept when one of its markets is.
     """
@@ -527,6 +537,9 @@ def _frames(
             ),
             "open_ts": np.array([m["open_ts"] for m in markets], dtype=np.float64),
             "close_ts": np.array([m["close_ts"] for m in markets], dtype=np.float64),
+            "price_level_structure": pd.Series(
+                [m["price_level_structure"] for m in markets], dtype=object),
+            "price_ranges": pd.Series([m["price_ranges"] for m in markets], dtype=object),
         }
     )
     events_frame = pd.DataFrame(

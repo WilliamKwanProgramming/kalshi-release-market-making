@@ -42,6 +42,7 @@ release is dropped.
 | `result` | `markets.outcome` | `yes` is 1, `no` is 0; `""` and `scalar` are missing, and counted |
 | `open_time`, `close_time` | `markets.open_ts`, `markets.close_ts` | Unix seconds; closing before opening: rejected |
 | `series_ticker` | `events.series` | the documented market has no such field: the event ticker up to its first hyphen |
+| `price_level_structure`, `price_ranges` | `markets.price_level_structure`, `markets.price_ranges` | the market's price grid, stored as given (`price_ranges` as JSON text); not read by the analysis |
 | none | `events.release_ts` | not an API field: it comes from the release calendar (below) |
 
 ## The historical cutoff
@@ -80,7 +81,8 @@ Requests are not paced.
 
 ```
 events  (event PRIMARY KEY, series, release_ts REAL)
-markets (market PRIMARY KEY, event -> events, outcome 0/1/NULL, open_ts REAL, close_ts REAL)
+markets (market PRIMARY KEY, event -> events, outcome 0/1/NULL, open_ts REAL, close_ts REAL,
+         price_level_structure, price_ranges)
 trades  (market -> markets, ts REAL, seq INTEGER, price REAL, size REAL, side -1/1, trade_id,
          PRIMARY KEY (market, ts, seq)) WITHOUT ROWID; unique (market, trade_id) when not NULL
 meta    (key PRIMARY KEY, value)   -- key "source": "synthetic" or "kalshi-public-api"
@@ -88,7 +90,8 @@ meta    (key PRIMARY KEY, value)   -- key "source": "synthetic" or "kalshi-publi
 
 Column types are checked (`typeof`), prices lie in (0, 1), sizes are positive, and one database holds
 one source. Each market that passes the filters is written in its own transaction, replacing its
-earlier trades. `panel.trade_panel_sql` computes the markout panel of `docs/model.md` section 5
+earlier trades. A database written before a column was added to the schema is refused with a message
+that names the missing columns (`panel.schema_problem`); build a new one. `panel.trade_panel_sql` computes the markout panel of `docs/model.md` section 5
 inside SQLite (version 3.35 or later).
 
 ## The release calendar

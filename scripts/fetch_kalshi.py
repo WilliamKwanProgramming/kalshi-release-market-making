@@ -147,8 +147,8 @@ def _fetch(args: argparse.Namespace, window: ingest.Window, calendar: pd.DataFra
 def main(argv: Sequence[str] | None = None, *, client: KalshiClient | None = None,
          out: Callable[[str], None] = print) -> int:
     """Run the command line; ``client`` and ``out`` are replaced in the tests. Returns the exit
-    status: 0 done, 1 the API failed (what was stored is kept), 2 the arguments or the calendar
-    are not usable."""
+    status: 0 done, 1 the API failed (what was stored is kept), 2 the arguments, the calendar or
+    the database (written by an earlier version of the schema) are not usable."""
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
@@ -172,7 +172,7 @@ def main(argv: Sequence[str] | None = None, *, client: KalshiClient | None = Non
         if args.dry_run:
             return _dry_run(args, window, calendar, client, out)
         return _fetch(args, window, calendar, client, out)
-    except ingest.CalendarChangedError as error:
+    except (ingest.CalendarChangedError, panel.OldSchemaError) as error:
         out(f"stopped: {error}")
         return 2
     except KalshiApiError as error:

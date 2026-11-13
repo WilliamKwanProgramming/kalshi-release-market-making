@@ -15,10 +15,17 @@ analysis reads it with :func:`get_source` to label its tables, and a database ne
 
 The ``event`` of a trade is not stored twice: the trade has a market, the market has an event.
 Columns of a frame that the tables do not have, such as the ``latent_*`` columns of a synthetic
-tape, are ignored and never stored, so the analysis cannot read them from the database. The one
-exception is ``trade_id`` (Kalshi's identifier of a trade): it is stored when the tape has it, and
-a unique index refuses a second trade with the same identifier in a market; :func:`read_dataset`
-does not return it.
+tape, are ignored and never stored, so the analysis cannot read them from the database. The
+exceptions describe where a row of Kalshi's API came from, and :func:`read_dataset` returns none of
+them: ``trade_id`` (Kalshi's identifier of a trade), stored when the tape has it, with a unique
+index that refuses a second trade with the same identifier in a market; and the market fields
+``price_level_structure`` and ``price_ranges`` (the price grid of the market, ``price_ranges`` as
+the JSON text of the list the API gave), stored when the markets frame has them.
+
+A database written before a column was added to the schema lacks it (``CREATE TABLE IF NOT
+EXISTS`` leaves an existing table alone): :func:`create_schema` refuses it with
+:class:`OldSchemaError`, and :func:`schema_problem` says what is missing. Such a database is
+rebuilt, not altered.
 
 SQLite does not enforce column types. A numpy integer bound as a parameter is stored as a BLOB
 without an error (checked on SQLite 3.45), so the numeric columns carry ``typeof`` checks next to
@@ -45,10 +52,12 @@ __all__ = [
     "SOURCES",
     "SOURCE_KALSHI_API",
     "SOURCE_SYNTHETIC",
+    "OldSchemaError",
     "create_schema",
     "get_source",
     "loaded_markets",
     "read_dataset",
+    "schema_problem",
     "stored_release_times",
     "trade_panel_sql",
     "write_dataset",
@@ -75,7 +84,9 @@ CREATE TABLE IF NOT EXISTS markets (
     event    TEXT NOT NULL REFERENCES events (event),
     outcome  INTEGER CHECK (outcome IN (0, 1)),
     open_ts  REAL NOT NULL CHECK (typeof(open_ts) = 'real'),
-    close_ts REAL NOT NULL CHECK (typeof(close_ts) = 'real')
+    close_ts REAL NOT NULL CHECK (typeof(close_ts) = 'real'),
+    price_level_structure TEXT,  -- as the API gave it; NULL for synthetic rows
+    price_ranges          TEXT   -- JSON text of the API's list; NULL for synthetic rows
 );
 
 CREATE TABLE IF NOT EXISTS trades (
@@ -104,6 +115,8 @@ _TEXT = pd.Series([""]).dtype
 _EVENT_COLUMNS = ("event", "release_ts", "series")
 _MARKET_COLUMNS = ("market", "event", "outcome", "open_ts", "close_ts")
 _TAPE_COLUMNS = ("event", "market", "ts", "seq", "price", "size", "side")
+# Columns added after the first version of the schema, by table: an older database lacks them.
+_ADDED_COLUMNS = {"markets": ("price_level_structure", "price_ranges")}
 _CHUNK_ROWS = 50_000  # rows converted to Python objects at a time
 
 _UPSERT_EVENT = """
@@ -111,21 +124,48 @@ INSERT INTO events (event, series, release_ts) VALUES (?, ?, ?)
 ON CONFLICT (event) DO UPDATE SET series = excluded.series, release_ts = excluded.release_ts
 """
 _UPSERT_MARKET = """
-INSERT INTO markets (market, event, outcome, open_ts, close_ts) VALUES (?, ?, ?, ?, ?)
+INSERT INTO markets (market, event, outcome, open_ts, close_ts, price_level_structure,
+    price_ranges) VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (market) DO UPDATE SET event = excluded.event, outcome = excluded.outcome,
-    open_ts = excluded.open_ts, close_ts = excluded.close_ts
+    open_ts = excluded.open_ts, close_ts = excluded.close_ts,
+    price_level_structure = excluded.price_level_structure, price_ranges = excluded.price_ranges
 """
 _INSERT_TRADE = """
 INSERT INTO trades (market, ts, seq, price, size, side, trade_id) VALUES (?, ?, ?, ?, ?, ?, ?)
 """
 
 
+class OldSchemaError(ValueError):
+    """The database was written by an earlier version of the schema and lacks a column."""
+
+
+def schema_problem(conn: sqlite3.Connection) -> str | None:
+    """What an existing database lacks of the current schema, or None if it lacks nothing.
+
+    Only the columns added after the first version are checked (``_ADDED_COLUMNS``); a table that
+    does not exist yet is not a problem, :func:`create_schema` creates it.
+    """
+    missing = []
+    for table, columns in _ADDED_COLUMNS.items():
+        present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if present:
+            missing += [f"{table}.{c}" for c in columns if c not in present]
+    if not missing:
+        return None
+    return (f"the database was written by an earlier version of the schema and lacks "
+            f"{', '.join(missing)}; build a new database (fetch the data again)")
+
+
 def create_schema(conn: sqlite3.Connection) -> None:
     """Switch foreign keys on for this connection and create the tables and indexes if missing.
 
     Foreign key enforcement is a setting of the connection, not of the file; a pending
-    transaction on ``conn`` is committed (``executescript`` does that).
+    transaction on ``conn`` is committed (``executescript`` does that). A database of an earlier
+    schema raises :class:`OldSchemaError` and is left unchanged.
     """
+    problem = schema_problem(conn)
+    if problem:
+        raise OldSchemaError(problem)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA_SQL)
 
@@ -188,10 +228,11 @@ def _outcomes(column: pd.Series) -> list[int | None]:
     return [None if np.isnan(v) else int(v) for v in values]
 
 
-def _trade_ids(tape: pd.DataFrame) -> list[str | None]:
-    if "trade_id" not in tape.columns:
-        return [None] * len(tape)
-    return [None if pd.isna(v) else str(v) for v in tape["trade_id"].tolist()]
+def _optional_text(frame: pd.DataFrame, column: str) -> list[str | None]:
+    """The column as text with None for missing values; all None when the frame lacks it."""
+    if column not in frame.columns:
+        return [None] * len(frame)
+    return [None if pd.isna(v) else str(v) for v in frame[column].tolist()]
 
 
 def _check_events_of_trades(tape: pd.DataFrame, markets: pd.DataFrame) -> None:
@@ -205,7 +246,7 @@ def _check_events_of_trades(tape: pd.DataFrame, markets: pd.DataFrame) -> None:
 
 def _trade_rows(tape: pd.DataFrame) -> Iterator[list[tuple[object, ...]]]:
     """The trades as rows of Python objects for ``executemany``, one chunk at a time."""
-    ids = _trade_ids(tape)
+    ids = _optional_text(tape, "trade_id")
     for start in range(0, len(tape), _CHUNK_ROWS):
         part = tape.iloc[start : start + _CHUNK_ROWS]
         yield list(
@@ -238,7 +279,8 @@ def write_dataset(
     ``markets`` are replaced by the trades of ``tape``, so writing the same dataset twice leaves
     the database unchanged. A trade of a market that is not in ``markets``, or whose ``event``
     differs from its market's event, raises ``ValueError``; a value that breaks a constraint of the
-    schema raises ``sqlite3.IntegrityError`` and nothing is written.
+    schema raises ``sqlite3.IntegrityError`` and nothing is written. The optional columns of the
+    module docstring are stored when the frames have them and stored as NULL when they do not.
     """
     if source not in SOURCES:
         raise ValueError(f"source must be one of {SOURCES}, got {source!r}")
@@ -264,6 +306,8 @@ def write_dataset(
             _outcomes(markets["outcome"]),
             _floats(markets["open_ts"], "open_ts"),
             _floats(markets["close_ts"], "close_ts"),
+            _optional_text(markets, "price_level_structure"),
+            _optional_text(markets, "price_ranges"),
             strict=True,
         )
     )

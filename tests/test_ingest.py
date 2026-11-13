@@ -254,7 +254,26 @@ def test_parse_market_maps_every_field():
     assert parsed == {
         "market": MARKET, "event": EVENT, "series": "KXCPI", "outcome": 0, "result": "no",
         "open_ts": unix(2026, 9, 1, 12, 0, 0), "close_ts": RELEASE_TS,
-        "expected_expiration_ts": RELEASE_TS + 60.0}
+        "expected_expiration_ts": RELEASE_TS + 60.0, "price_level_structure": None,
+        "price_ranges": None}
+
+
+# The price grid of a market as the Market object of the documentation describes it: a structure
+# name and ranges of prices with the step of each, all in USD as text.
+GRID = {"price_level_structure": "tapered_deci_cent",
+        "price_ranges": [{"start": "0.0000", "end": "0.1000", "step": "0.0010"},
+                         {"start": "0.1000", "end": "0.9000", "step": "0.0100"},
+                         {"start": "0.9000", "end": "1.0000", "step": "0.0010"}]}
+
+
+def test_the_price_grid_is_kept_as_given():
+    parsed = parse_market(market_record(**GRID))
+    assert parsed["price_level_structure"] == "tapered_deci_cent"
+    assert json.loads(parsed["price_ranges"]) == GRID["price_ranges"]
+    assert parse_market(market_record(price_ranges=[]))["price_ranges"] == "[]"
+    # a structure that is not text is not kept; ranges of any shape are kept as JSON text
+    odd = parse_market(market_record(price_level_structure=3, price_ranges={"step": 0.01}))
+    assert odd["price_level_structure"] is None and odd["price_ranges"] == '{"step": 0.01}'
 
 
 @pytest.mark.parametrize("result, outcome", [
@@ -500,7 +519,8 @@ def test_a_clean_market_gives_the_contract_frames_by_hand(tmp_path):
     assert dtypes == (np.float64, np.int64, np.int8)
     assert markets.to_dict("list") == {
         "market": [MARKET], "event": [EVENT], "outcome": [1],
-        "open_ts": [unix(2026, 9, 1, 12, 0, 0)], "close_ts": [RELEASE_TS]}
+        "open_ts": [unix(2026, 9, 1, 12, 0, 0)], "close_ts": [RELEASE_TS],
+        "price_level_structure": [None], "price_ranges": [None]}
     assert events.to_dict("list") == {"event": [EVENT], "release_ts": [RELEASE_TS],
                                       "series": ["KXCPI"]}
     assert markets["outcome"].dtype == np.int64 and events["release_ts"].dtype == np.float64
@@ -727,7 +747,8 @@ def test_the_result_does_not_depend_on_the_order_of_the_market_records(tmp_path)
 def test_nothing_kept_gives_empty_frames_with_the_contract_columns(tmp_path):
     tape, kept, events, report = build(tmp_path, [], {})
     assert list(tape.columns) == TAPE_COLUMNS
-    assert list(kept.columns) == ["market", "event", "outcome", "open_ts", "close_ts"]
+    assert list(kept.columns) == ["market", "event", "outcome", "open_ts", "close_ts",
+                                  "price_level_structure", "price_ranges"]
     assert list(events.columns) == ["event", "release_ts", "series"]
     assert len(tape) == len(kept) == len(events) == 0 and report.markets_in == 0
     assert tape["ts"].dtype == np.float64 and tape["side"].dtype == np.int8
@@ -1197,6 +1218,17 @@ def test_a_trade_on_both_endpoints_at_the_cutoff_is_stored_once(tmp_path, db):
     assert summary.report.trades_in == 244 and summary.report.trades_duplicate == 3
 
 
+def test_the_price_grid_of_each_market_is_stored_and_not_returned(tmp_path, db):
+    world = canned_world()
+    world.live[0] = {**world.live[0], **GRID}  # O3 has a grid, the others do not
+    run_ingest(db, tmp_path, make_api(world))
+    assert_stored(db, world)  # the frames of the contract do not change
+    rows = dict(((m, (s, r)) for m, s, r in db.execute(
+        "SELECT market, price_level_structure, price_ranges FROM markets")))
+    assert rows[O3][0] == "tapered_deci_cent" and json.loads(rows[O3][1]) == GRID["price_ranges"]
+    assert rows[O4] == rows[S3] == (None, None)
+
+
 @pytest.mark.parametrize("strict_bounds", [False, True])
 @pytest.mark.parametrize("overlap", [False, True])
 def test_the_trades_around_the_cutoff_are_read_whichever_way_the_bounds_are_treated(
@@ -1474,6 +1506,17 @@ def test_a_changed_calendar_stops_with_status_two(script, tmp_path):
     api = make_api(canned_world())
     status, text = run_cli(script, tmp_path, transport=api, rows=moved)
     assert status == 2 and "stopped" in text and SEP in text and api.urls == []
+
+
+def test_a_database_of_the_older_schema_stops_with_status_two_before_any_request(script,
+                                                                               tmp_path):
+    with closing(sqlite3.connect(tmp_path / "k.sqlite")) as conn:
+        conn.execute("CREATE TABLE markets (market TEXT PRIMARY KEY, event TEXT, outcome INTEGER,"
+                     " open_ts REAL, close_ts REAL)")
+        conn.commit()
+    api = make_api(canned_world())
+    status, text = run_cli(script, tmp_path, transport=api)
+    assert status == 2 and "earlier version of the schema" in text and api.urls == []
 
 
 def test_an_empty_series_is_reported_as_empty_and_the_run_still_ends_well(script, tmp_path):

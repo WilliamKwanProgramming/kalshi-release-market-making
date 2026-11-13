@@ -332,6 +332,46 @@ def test_text_columns_must_hold_text(conn):
         panel.write_dataset(conn, tape, markets, events, source="synthetic")
 
 
+def test_the_price_grid_of_a_market_is_stored_when_given_and_null_otherwise(conn):
+    tape, markets, events = small_dataset()
+    panel.write_dataset(conn, tape, markets, events, source="kalshi-public-api")
+    query = "SELECT market, price_level_structure, price_ranges FROM markets ORDER BY market"
+    assert conn.execute(query).fetchall() == [("M1", None, None), ("M2", None, None)]
+    markets["price_level_structure"] = ["linear_cent", None]
+    markets["price_ranges"] = ['[{"start": "0.0000", "end": "1.0000", "step": "0.0100"}]', np.nan]
+    panel.write_dataset(conn, tape, markets, events, source="kalshi-public-api")  # updates
+    assert conn.execute(query).fetchall() == [
+        ("M1", "linear_cent", '[{"start": "0.0000", "end": "1.0000", "step": "0.0100"}]'),
+        ("M2", None, None)]
+    assert list(panel.read_dataset(conn)[1].columns) == MARKET_COLUMNS
+
+
+# The markets table as the first version of the schema created it.
+OLD_MARKETS = """CREATE TABLE markets (market TEXT PRIMARY KEY, event TEXT NOT NULL,
+    outcome INTEGER, open_ts REAL NOT NULL, close_ts REAL NOT NULL)"""
+
+
+def test_a_database_of_the_older_schema_is_refused_with_a_clear_message_and_left_alone(tmp_path):
+    path = tmp_path / "old.sqlite"
+    with closing(sqlite3.connect(path)) as old:
+        old.execute(OLD_MARKETS)
+        old.commit()
+    with closing(sqlite3.connect(path)) as conn:
+        problem = panel.schema_problem(conn)
+        assert "earlier version of the schema" in problem
+        assert "markets.price_level_structure" in problem and "markets.price_ranges" in problem
+        with pytest.raises(panel.OldSchemaError, match="build a new database"):
+            panel.create_schema(conn)
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+        assert tables == {"markets", "sqlite_autoindex_markets_1"}  # nothing was created
+
+
+def test_a_new_or_current_database_has_no_schema_problem(conn):
+    assert panel.schema_problem(conn) is None
+    with closing(sqlite3.connect(":memory:")) as empty:
+        assert panel.schema_problem(empty) is None  # no table yet: create_schema makes them
+
+
 # ---------------------------------------------------------------------------------- trade ids
 def test_trade_ids_are_stored_with_the_trades_but_not_returned(conn):
     tape, markets, events = small_dataset()
