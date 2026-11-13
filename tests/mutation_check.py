@@ -44,6 +44,11 @@ def script_mutant(name: str, tests: str, old: str, new: str) -> None:
     MUTANTS.append((name, tests.split(), [("scripts/fetch_kalshi.py", old, new)]))
 
 
+def file_mutant(name: str, tests: str, path: str, old: str, new: str) -> None:
+    """Register a mutant that replaces ``old`` by ``new`` in the repository file ``path``."""
+    MUTANTS.append((name, tests.split(), [(path, old, new)]))
+
+
 # ---- mid proxy of the tape (tape.py)
 mutant("tape: inclusive and exclusive query swapped", "tests/test_tape.py", "tape.py",
        'side="right" if inclusive else "left"', 'side="left" if inclusive else "right"')
@@ -385,6 +390,390 @@ script_mutant("fetch_kalshi: a dry run fetches", ING,
 script_mutant("fetch_kalshi: a draft calendar may have any name", ING,
               'and "draft" not in args.calendar_draft.name.lower():',
               "and False:")
+
+
+# ---- the recovery study (experiments/recovery.py)
+REC = "tests/test_recovery.py"
+mutant("recovery: oracle truncation pre", REC, "experiments/recovery.py",
+       ', post[b - 1])',
+       ', pre[b - 1])')
+mutant("recovery: oracle first trade after right", REC, "experiments/recovery.py",
+       'ts[a:b] + horizon_s, side="left")',
+       'ts[a:b] + horizon_s, side="right")')
+mutant("recovery: oracle horizon ignored", REC, "experiments/recovery.py",
+       'ts[a:b] + horizon_s, side',
+       'ts[a:b] + HORIZON_S, side')
+mutant("recovery: oracle side dropped", REC, "experiments/recovery.py",
+       'out[a:b] = side[a:b] * (after - pre[a:b])',
+       'out[a:b] = after - pre[a:b]')
+mutant("recovery: oracle one market", REC, "experiments/recovery.py",
+       'starts = np.flatnonzero(np.r_[True, codes[1:] != codes[:-1]])',
+       'starts = np.array([0])')
+mutant("recovery: impact sign", REC, "experiments/recovery.py",
+       'return side * (tape["latent_mid_post"].to_numpy() - tape["latent_mid_pre"].to_numpy())',
+       'return side * (tape["latent_mid_pre"].to_numpy() - tape["latent_mid_post"].to_numpy())')
+mutant("recovery: saturation first trade", REC, "experiments/recovery.py",
+       '["latent_mid_post"].last()',
+       '["latent_mid_post"].first()')
+mutant("recovery: saturation pre mid", REC, "experiments/recovery.py",
+       'groupby("event", sort=False)["latent_mid_post"]',
+       'groupby("event", sort=False)["latent_mid_pre"]')
+mutant("recovery: saturation closed band", REC, "experiments/recovery.py",
+       '((last < lo) | (last > hi))',
+       '((last <= lo) | (last >= hi))')
+mutant("recovery: near upper bound open", REC, "experiments/recovery.py",
+       '("near (0,30]", (tau > 0.0) & (tau <= 30.0))',
+       '("near (0,30]", (tau > 0.0) & (tau < 30.0))')
+mutant("recovery: quiet bucket previous", REC, "experiments/recovery.py",
+       'rows[len(BUCKET_LABELS)], rows[len(BUCKET_LABELS) - 1]',
+       'rows[len(BUCKET_LABELS)], rows[len(BUCKET_LABELS) - 2]')
+mutant("recovery: d row sign", REC, "experiments/recovery.py",
+       'near[key] - quiet[key] if key not in',
+       'quiet[key] - near[key] if key not in')
+mutant("recovery: bias sign", REC, "experiments/recovery.py",
+       'row["bias_cents"] = row["tape_as_cents"] - row["oracle_as_cents"]',
+       'row["bias_cents"] = row["oracle_as_cents"] - row["tape_as_cents"]')
+mutant("recovery: scaled over tape defined", REC, "experiments/recovery.py",
+       'has_scaled = in_window & ~np.isnan(scaled)',
+       'has_scaled = in_window & defined')
+mutant("recovery: informed share in minutes", REC, "experiments/recovery.py",
+       'informed_share(mean_tau / 60.0, params)',
+       'informed_share(mean_tau, params)')
+mutant("recovery: oracle not in cents", REC, "experiments/recovery.py",
+       '"oracle_as_cents": CENTS * float(oracle[use].mean())',
+       '"oracle_as_cents": float(oracle[use].mean())')
+mutant("recovery: undefined proxy kept", REC, "experiments/recovery.py",
+       'use = in_window & defined',
+       'use = in_window')
+mutant("recovery: interval sign closed", REC, "experiments/recovery.py",
+       '"positive" if lo > 0.0 else "negative" if hi < 0.0 else "zero"',
+       '"positive" if lo >= 0.0 else "negative" if hi <= 0.0 else "zero"')
+mutant("recovery: surge share inverted", REC, "experiments/recovery.py",
+       'point = spec_null.effects["raw_0_30"]["D"] / planted.effects["raw_0_30"]["D"]',
+       'point = planted.effects["raw_0_30"]["D"] / spec_null.effects["raw_0_30"]["D"]')
+mutant("recovery: surge bootstrap unpaired", REC, "experiments/recovery.py",
+       'share = effect(b) / effect(a)',
+       'share = effect(b) / effect(a)[::-1]')
+mutant("recovery: surge undefined counted wrong", REC, "experiments/recovery.py",
+       '"B_undefined": int(B - usable.sum())',
+       '"B_undefined": int(usable.sum())')
+mutant("recovery: surge ci keeps undefined", REC, "experiments/recovery.py",
+       'percentile_interval(share[usable])',
+       'percentile_interval(np.nan_to_num(share))')
+mutant("recovery: surge effect quiet dropped", REC, "experiments/recovery.py",
+       '- ratio_of_sums(s["quiet_sum"], s["quiet_n"], weights))',
+       '- 0.0)')
+mutant("recovery: naive one sided z", REC, "experiments/recovery.py",
+       'NormalDist().inv_cdf(0.5 + level / 2.0)',
+       'NormalDist().inv_cdf(level)')
+mutant("recovery: naive variance ddof0", REC, "experiments/recovery.py",
+       'a.var(ddof=1) / a.size + b.var(ddof=1) / b.size',
+       'a.var() / a.size + b.var() / b.size')
+mutant("recovery: naive quiet lower closed", REC, "experiments/recovery.py",
+       '(tau > quiet[0]) & (tau <= quiet[1])',
+       '(tau >= quiet[0]) & (tau <= quiet[1])')
+mutant("recovery: naive near lower closed", REC, "experiments/recovery.py",
+       '(tau > near[0]) & (tau <= near[1])',
+       '(tau >= near[0]) & (tau <= near[1])')
+mutant("recovery: naive difference sign", REC, "experiments/recovery.py",
+       'd = float(a.mean() - b.mean())',
+       'd = float(b.mean() - a.mean())')
+mutant("recovery: naive nan dropped not", REC, "experiments/recovery.py",
+       'present = ~np.isnan(values)',
+       'present = np.ones(len(values), dtype=bool)')
+mutant("recovery: bootstrap seed without rep", REC, "experiments/recovery.py",
+       'np.random.SeedSequence([BASE_SEED, 2, rep])',
+       'np.random.SeedSequence([BASE_SEED, 2])')
+mutant("recovery: world seed without rep", REC, "experiments/recovery.py",
+       'generate_world(world_params(world, max(sizes)), BASE_SEED + rep)',
+       'generate_world(world_params(world, max(sizes)), BASE_SEED)')
+mutant("recovery: nested prefix inclusive", REC, "experiments/recovery.py",
+       'first = slim[slim["event"] < n]',
+       'first = slim[slim["event"] <= n]')
+mutant("recovery: replication column ignored", REC, "experiments/recovery.py",
+       'column=e.column, B=B, seed=seed)',
+       'column="adverse_selection", B=B, seed=seed)')
+mutant("recovery: replication B ignored", REC, "experiments/recovery.py",
+       'column=e.column, B=B, seed=seed)',
+       'column=e.column, B=BOOTSTRAP_B, seed=seed)')
+mutant("recovery: naive column ignored", REC, "experiments/recovery.py",
+       'naive_interval(first, e.column, e.near)',
+       'naive_interval(first, "adverse_selection", e.near)')
+mutant("recovery: interval ends swapped", REC, "experiments/recovery.py",
+       '"lo": r["D_ci"][0], "hi": r["D_ci"][1], "p": r["p_one_sided"],',
+       '"lo": r["D_ci"][1], "hi": r["D_ci"][0], "p": r["p_one_sided"],')
+mutant("recovery: event no shifted", REC, "experiments/recovery.py",
+       'get_indexer(markouts["event"]),',
+       'get_indexer(markouts["event"]) + 1,')
+mutant("recovery: coverage strict inequalities", REC, "experiments/recovery.py",
+       '((cell["lo"] <= truth) & (truth <= cell["hi"]))',
+       '((cell["lo"] < truth) & (truth < cell["hi"]))')
+mutant("recovery: coverage naive uses cluster", REC, "experiments/recovery.py",
+       'naive = float(((cell["naive_lo"] <= truth) & (truth <= cell["naive_hi"])).mean())',
+       'naive = float(((cell["lo"] <= truth) & (truth <= cell["hi"])).mean())')
+mutant("recovery: coverage sd population", REC, "experiments/recovery.py",
+       'cell["D"].std(ddof=1)',
+       'cell["D"].std(ddof=0)')
+mutant("recovery: coverage width naive cluster", REC, "experiments/recovery.py",
+       '"width_naive_cents": CENTS * float((cell["naive_hi"] - cell["naive_lo"]).mean()),',
+       '"width_naive_cents": CENTS * float((cell["hi"] - cell["lo"]).mean()),')
+mutant("recovery: power at or below alpha", REC, "experiments/recovery.py",
+       'reject = float((cell["p"] < ALPHA).mean())',
+       'reject = float((cell["p"] <= ALPHA).mean())')
+mutant("recovery: power population of planted", REC, "experiments/recovery.py",
+       'float(truth.loc[(world, key), "D_cents"])',
+       'float(truth.loc[("planted", key), "D_cents"])')
+mutant("recovery: sample size at least", REC, "experiments/recovery.py",
+       'rows.loc[rows["reject"] > level, "n_events"]',
+       'rows.loc[rows["reject"] >= level, "n_events"]')
+mutant("recovery: sample size largest", REC, "experiments/recovery.py",
+       'out[e.key] = int(enough.min()) if len(enough) else None',
+       'out[e.key] = int(enough.max()) if len(enough) else None')
+mutant("recovery: share se denominator", REC, "experiments/recovery.py",
+       'np.sqrt(share * (1.0 - share) / n)',
+       'np.sqrt(share * (1.0 - share) / (n - 1))')
+mutant("recovery: cells keep empty cells", REC, "experiments/recovery.py",
+       ('                if mask.any():\n                    yield world, e.key, int(n), '
+        'replications[mask]'),
+       '                yield world, e.key, int(n), replications[mask]')
+mutant("recovery: truth of planted for all", REC, "experiments/recovery.py",
+       ('truth = {(w, e.key): p.effects[e.key]["D"] for w, p in populations.items() for e in '
+        'ESTIMANDS}'),
+       ('truth = {(w, e.key): populations["planted"].effects[e.key]["D"] for w, p in '
+        'populations.items() for e in ESTIMANDS}'))
+mutant("recovery: replication numbers from one", REC, "experiments/recovery.py",
+       'for w in WORLDS for r in range(reps)]',
+       'for w in WORLDS for r in range(1, reps + 1)]')
+mutant("recovery: design reps constant", REC, "experiments/recovery.py",
+       '"reps": reps, "reps_design"',
+       '"reps": REPS, "reps_design"')
+mutant("recovery: population seed shifted", REC, "experiments/recovery.py",
+       'population_world(w, pop_events, POP_SEED, B)',
+       'population_world(w, pop_events, POP_SEED + 1, B)')
+mutant("recovery: spec null without surge", REC, "experiments/recovery.py",
+       '"spec_null": {"pi1": 0.0},',
+       '"spec_null": {"pi1": 0.0, "surge": 0.0},')
+mutant("recovery: flat null keeps surge", REC, "experiments/recovery.py",
+       '"flat_null": {"pi1": 0.0, "surge": 0.0},',
+       '"flat_null": {"pi1": 0.0},')
+mutant("recovery: public markouts see latent", REC, "experiments/recovery.py",
+       'tape = world.tape[[c for c in world.tape.columns if not str(c).startswith("latent_")]]',
+       'tape = world.tape')
+mutant("recovery: cut note at design", REC, "experiments/recovery.py",
+       'if d["reps"] >= d["reps_design"]:',
+       'if d["reps"] > d["reps_design"]:')
+mutant("recovery: lost coverage ratio", REC, "experiments/recovery.py",
+       'np.sqrt(1.0 + big / d["pop_events"])',
+       'np.sqrt(1.0 + d["pop_events"] / big)')
+mutant("recovery: mc se half", REC, "experiments/recovery.py",
+       'se = 100.0 * np.sqrt(0.25 / reps)',
+       'se = 100.0 * np.sqrt(0.5 / reps)')
+mutant("recovery: effect sentence and", REC, "experiments/recovery.py",
+       'if spec["sign"] != "zero" or flat["sign"] != "zero":',
+       'if spec["sign"] != "zero" and flat["sign"] != "zero":')
+mutant("recovery: effect sentence raw clean", REC, "experiments/recovery.py",
+       'clean = _effect(res, "flat_null", "scaled_5_30")',
+       'clean = _effect(res, "flat_null", "raw_5_30")')
+mutant("recovery: coverage reference smallest", REC, "experiments/recovery.py",
+       'ref = 200 if 200 in d["sizes"] else max(d["sizes"])',
+       'ref = 200 if 200 in d["sizes"] else min(d["sizes"])')
+mutant("recovery: table ids duplicate", REC, "experiments/recovery.py",
+       '"### M6. Mean width',
+       '"### M5. Mean width')
+mutant("recovery: share without percent", REC, "experiments/recovery.py",
+       'return f"{100.0 * x:.{digits}f}"',
+       'return f"{x:.{digits}f}"')
+mutant("recovery: sample next smaller includes self", REC, "experiments/recovery.py",
+       'smaller = sorted(s for s in d["sizes"] if s < n)',
+       'smaller = sorted(s for s in d["sizes"] if s <= n)')
+mutant("recovery: main reps ignored", REC, "experiments/recovery.py",
+       'res = run_study(args.reps, args.B, args.pop_events, args.sizes)',
+       'res = run_study(REPS, args.B, args.pop_events, args.sizes)')
+mutant("recovery: main B ignored", REC, "experiments/recovery.py",
+       'res = run_study(args.reps, args.B, args.pop_events, args.sizes)',
+       'res = run_study(args.reps, BOOTSTRAP_B, args.pop_events, args.sizes)')
+mutant("recovery: main sizes ignored", REC, "experiments/recovery.py",
+       'res = run_study(args.reps, args.B, args.pop_events, args.sizes)',
+       'res = run_study(args.reps, args.B, args.pop_events, SIZES)')
+mutant("recovery: main pop events ignored", REC, "experiments/recovery.py",
+       'res = run_study(args.reps, args.B, args.pop_events, args.sizes)',
+       'res = run_study(args.reps, args.B, POP_EVENTS, args.sizes)')
+mutant("recovery: budget reps design changed", REC, "experiments/recovery.py",
+       'REPS_DESIGN = 200',
+       'REPS_DESIGN = 100')
+mutant("recovery: bootstrap B constant", REC, "experiments/recovery.py",
+       'BOOTSTRAP_B = 1000',
+       'BOOTSTRAP_B = 500')
+mutant("recovery: alpha constant", REC, "experiments/recovery.py",
+       'ALPHA = 0.05',
+       'ALPHA = 0.1')
+mutant("recovery: horizon constant", REC, "experiments/recovery.py",
+       'HORIZON_S = 300.0',
+       'HORIZON_S = 600.0')
+mutant("recovery: quiet constant", REC, "experiments/recovery.py",
+       'QUIET = (360.0, np.inf)',
+       'QUIET = (180.0, np.inf)')
+mutant("recovery: sizes constant", REC, "experiments/recovery.py",
+       'SIZES = (25, 50, 100, 200, 400)',
+       'SIZES = (25, 50, 100, 200, 300)')
+
+# ---- the calibration study (experiments/calibration_study.py)
+CST = "tests/test_calibration_study.py"
+mutant("calibration study: world x sd ignored", CST, "experiments/calibration_study.py",
+       'x = rng.normal(0.0, x_sd, n_events)',
+       'x = rng.normal(0.0, 1.5, n_events)')
+mutant("calibration study: outcome uses price slope", CST, "experiments/calibration_study.py",
+       '< sigmoid(x)).astype(np.int64)',
+       '< sigmoid(beta * x)).astype(np.int64)')
+mutant("calibration study: price without noise", CST, "experiments/calibration_study.py",
+       'price = sigmoid(beta * x + rng.normal(0.0, noise_sd, n_events))',
+       'price = sigmoid(beta * x)')
+mutant("calibration study: spacing two weeks", CST, "experiments/calibration_study.py",
+       'SPACING_S = 168.0 * 3600.0',
+       'SPACING_S = 336.0 * 3600.0')
+mutant("calibration study: pop no clip", CST, "experiments/calibration_study.py",
+       'zc = np.clip(z, logit(clip), logit(1.0 - clip))',
+       'zc = z')
+mutant("calibration study: pop weight norm", CST, "experiments/calibration_study.py",
+       'weight = np.outer(wx, we) / (2.0 * np.pi)',
+       'weight = np.outer(wx, we) / np.pi')
+mutant("calibration study: pop noise dropped", CST, "experiments/calibration_study.py",
+       'z = beta * x + noise_sd * grid_e',
+       'z = beta * x')
+mutant("calibration study: pop brier raw swapped", CST, "experiments/calibration_study.py",
+       'brier_raw = float(np.sum(weight * (q * (1.0 - p) ** 2 + (1.0 - q) * p**2)))',
+       'brier_raw = float(np.sum(weight * (q * p**2 + (1.0 - q) * (1.0 - p) ** 2)))')
+mutant("calibration study: pop bss direction", CST, "experiments/calibration_study.py",
+       '"bss": 1.0 - brier_recal / brier_raw}',
+       '"bss": brier_recal / brier_raw - 1.0}')
+mutant("calibration study: seed without rep", CST, "experiments/calibration_study.py",
+       'key = [BASE_SEED, 1, round(100 * beta), n_events, rep]',
+       'key = [BASE_SEED, 1, round(100 * beta), n_events]')
+mutant("calibration study: boot seed same stream", CST, "experiments/calibration_study.py",
+       'np.random.SeedSequence([BASE_SEED, 2, *key[2:]])',
+       'np.random.SeedSequence([BASE_SEED, 1, *key[2:]])')
+mutant("calibration study: min events off by one", CST, "experiments/calibration_study.py",
+       'world.price, world.outcome, world.release_ts, min_events=MIN_EVENTS,',
+       'world.price, world.outcome, world.release_ts, min_events=MIN_EVENTS + 1,')
+mutant("calibration study: clusters are pairs", CST, "experiments/calibration_study.py",
+       'refit_every=REFIT_EVERY, cluster=np.arange(n_events),',
+       'refit_every=REFIT_EVERY, cluster=np.arange(n_events) // 2,')
+mutant("calibration study: slope last not mean", CST, "experiments/calibration_study.py",
+       '"slope": float(frame["b"].mean()),',
+       '"slope": float(frame["b"].iloc[-1]),')
+mutant("calibration study: supported at or below", CST, "experiments/calibration_study.py",
+       'supported = float((ok["p_one_sided"] < ALPHA).mean())',
+       'supported = float((ok["p_one_sided"] <= ALPHA).mean())')
+mutant("calibration study: failed rows kept", CST, "experiments/calibration_study.py",
+       'ok = replications[~replications["failed"].astype(bool)]',
+       'ok = replications')
+mutant("calibration study: supported se divisor", CST, "experiments/calibration_study.py",
+       'np.sqrt(supported * (1.0 - supported) / n)',
+       'np.sqrt(supported * (1.0 - supported) / (n - 1))')
+mutant("calibration study: n scored wrong", CST, "experiments/calibration_study.py",
+       '"n_scored": n_events - MIN_EVENTS,',
+       '"n_scored": n_events,')
+mutant("calibration study: inverse beta wrong", CST, "experiments/calibration_study.py",
+       'out["slope_inverse_beta"] = 1.0 / beta',
+       'out["slope_inverse_beta"] = beta')
+mutant("calibration study: table null rows wrong", CST, "experiments/calibration_study.py",
+       'null = cells[cells["beta"] == 1.0]\n    null_text',
+       'null = cells[cells["beta"] < 1.0]\n    null_text')
+mutant("calibration study: table bss not percent", CST, "experiments/calibration_study.py",
+       '| {_pct(c.bss_mean, 2)} "\n            f"({_pct(c.bss_se, 2)})',
+       '| {c.bss_mean:.2f} "\n            f"({_pct(c.bss_se, 2)})')
+mutant("calibration study: table slope column swapped", CST, "experiments/calibration_study.py",
+       'f"{c.slope_inverse_beta:.3f} | {c.slope_pop:.3f} | "',
+       'f"{c.slope_pop:.3f} | {c.slope_inverse_beta:.3f} | "')
+mutant("calibration study: main wrong population", CST, "experiments/calibration_study.py",
+       'rows.append(summarise_cell(reps, beta, n_events, args.B, population[beta]))',
+       'rows.append(summarise_cell(reps, beta, n_events, args.B, population[BETAS[0]]))')
+mutant("calibration study: main false positive beta", CST, "experiments/calibration_study.py",
+       'for r in cells.itertuples() if r.beta == 1.0',
+       'for r in cells.itertuples() if r.beta == 0.7')
+mutant("calibration study: main reps ignored", CST, "experiments/calibration_study.py",
+       'reps = run_cell(beta, n_events, args.reps, args.B)',
+       'reps = run_cell(beta, n_events, REPS, args.B)')
+mutant("calibration study: main B ignored", CST, "experiments/calibration_study.py",
+       'reps = run_cell(beta, n_events, args.reps, args.B)',
+       'reps = run_cell(beta, n_events, args.reps, BOOTSTRAP_B)')
+mutant("calibration study: reps constant", CST, "experiments/calibration_study.py",
+       'REPS = 200',
+       'REPS = 100')
+mutant("calibration study: failed row not marked", CST, "experiments/calibration_study.py",
+       'rows.append({**row, "failed": True})',
+       'rows.append({**row, "failed": False})')
+
+# ---- more recalibration mutants (calibration.py)
+mutant("calibration: clip not applied in fit", CAL, "calibration.py",
+       '    x = _clipped_logit(p, clip)\n    if x.max()',
+       '    x = logit(p)\n    if x.max()')
+mutant("calibration: refit every off by one", CAL, "calibration.py",
+       'stop = int(first[k + refit_every]) if k + refit_every < k_total else n',
+       'stop = int(first[k + refit_every - 1]) if k + refit_every - 1 < k_total else n')
+mutant("calibration: refit every range step", CAL, "calibration.py",
+       'for k in range(min_events, k_total, refit_every):',
+       'for k in range(min_events, k_total, refit_every + 1):')
+mutant("calibration: rows not releases", CAL, "calibration.py",
+       'releases, first = np.unique(ts, return_index=True)',
+       'releases, first = np.arange(n, dtype=float), np.arange(n)')
+mutant("calibration: ordering ignores time", CAL, "calibration.py",
+       'keys = [y, p, ts]  # np.lexsort sorts by the last key first',
+       'keys = [y, ts, p]  # np.lexsort sorts by the last key first')
+mutant("calibration: ratio inverted", CAL, "calibration.py",
+       'boot = 1.0 - ratio',
+       'boot = ratio - 1.0')
+mutant("calibration: brier absolute error", CAL, "calibration.py",
+       'return float(np.mean((p - y) ** 2))',
+       'return float(np.mean(np.abs(p - y)))')
+mutant("calibration: max iter returns garbage", CAL, "calibration.py",
+       '        a, b, ll = a + step * da, b + step * db, ll_new\n    raise not_converged',
+       '        a, b, ll = a + step * da, b + step * db, ll_new\n    return a, b')
+mutant("calibration: cluster codes unsorted", CAL, "calibration.py",
+       'codes, uniques = pd.factorize(arr, sort=True)',
+       'codes, uniques = pd.factorize(arr)')
+mutant("calibration: n fit wrong", CAL, "calibration.py",
+       'columns["n_fit"][start:stop] = start',
+       'columns["n_fit"][start:stop] = stop')
+mutant("calibration: min obs constant", CAL, "calibration.py",
+       'MIN_OBSERVATIONS = 10',
+       'MIN_OBSERVATIONS = 5')
+mutant("calibration: scored cut wrong", CAL, "calibration.py",
+       'scored = int(first[min_events]) if k_total > min_events else n',
+       'scored = int(first[min_events]) + 1 if k_total > min_events else n')
+mutant("calibration: skill ignores seed", CAL, "calibration.py",
+       'np.random.default_rng(seed))',
+       'np.random.default_rng(0))')
+mutant("calibration: level ignored", CAL, "calibration.py",
+       '"ci": percentile_interval(boot, level),',
+       '"ci": percentile_interval(boot, 0.95),')
+
+
+# ---- the scripts that paste the tables into the README and check the numbers there
+RDM = "tests/test_readme_scripts.py"
+file_mutant("make_tables: markers that do not pair up are accepted", RDM,
+            "scripts/make_tables.py", "if opens != closes:", "if False:")
+file_mutant("make_tables: a table that no file defines is not reported", RDM,
+            "scripts/make_tables.py", "if table_id not in tables:", "if False:")
+file_mutant("make_tables: an ID that two files define is accepted", RDM,
+            "scripts/make_tables.py", "if table_id in tables:", "if False:")
+file_mutant("make_tables: check mode never fails", RDM, "scripts/make_tables.py",
+            "    if args.check:\n        if new != old:", "    if args.check:\n        if False:")
+file_mutant("check_readme_numbers: a number that left the results file is accepted", RDM,
+            "scripts/check_readme_numbers.py", "if in_file not in cache[path]:", "if False:")
+file_mutant("check_readme_numbers: a number that left the README is accepted", RDM,
+            "scripts/check_readme_numbers.py", "if in_readme not in readme:", "if False:")
+file_mutant("check_readme_numbers: problems do not change the exit status", RDM,
+            "scripts/check_readme_numbers.py", "return 1 if problems else 0", "return 0")
+file_mutant("check_readme_numbers: a pasted table that differs is accepted", RDM,
+            "scripts/check_readme_numbers.py",
+            "make_tables.read_tables(ROOT / \"results\")) != readme:",
+            "make_tables.read_tables(ROOT / \"results\")) == readme:")
+file_mutant("check_readme_numbers: web links are looked up as files", RDM,
+            "scripts/check_readme_numbers.py",
+            'if target.startswith(("http://", "https://", "#", "mailto:")):', "if False:")
+file_mutant("check_readme_numbers: the anchor of a link is not removed", RDM,
+            "scripts/check_readme_numbers.py", 'target.split("#", 1)[0]', "target")
 
 
 def run_pytest(work: Path, targets: list[str], timeout: float):
