@@ -30,9 +30,16 @@ block trade; at or after the release (``ts >= release``); then a market with few
 ``min_trades`` trades left is dropped with its trades. Trades are numbered ``seq = 0, 1, ...`` in
 the order (``ts``, ``trade_id``), so the numbering does not depend on the order of the pages.
 
-:func:`fetch_series` and :func:`ingest_series` read a series from the live and historical
-endpoints and write it to SQLite market by market, so that an interrupted run resumes.
-Tested on canned responses only; not run against the live service.
+Fetching. :func:`list_series_markets` lists a series from ``GET /markets`` and ``GET
+/historical/markets`` (one record per ticker). :func:`fetch_series` reads the trades of the markets
+that can enter the dataset (a readable record, an event in the calendar, a release inside the
+window) from the endpoint or endpoints that hold them (:func:`trade_queries`: trades created before
+the cutoff of ``GET /historical/cutoff`` are on the historical endpoint only). :func:`ingest_series`
+writes every market that passes the protocol filters to SQLite as soon as its trades are read, so
+that an interrupted run resumes: a market already in the database is not fetched again. A market
+dropped for having too few trades is not stored, so a resumed run fetches it again, and the report
+of a run counts only what that run read. Tested on canned responses shaped like the documentation;
+not run against the live service.
 """
 
 from __future__ import annotations
@@ -40,7 +47,8 @@ from __future__ import annotations
 import csv
 import datetime
 import math
-from collections.abc import Iterable, Mapping
+import sqlite3
+from collections.abc import Callable, Container, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -48,21 +56,37 @@ from typing import Any, NamedTuple
 import numpy as np
 import pandas as pd
 
-from kalshi_mm.kalshi_api import parse_iso_datetime, parse_iso_time
+from kalshi_mm import panel
+from kalshi_mm.kalshi_api import HistoricalCutoff, KalshiClient, parse_iso_datetime, parse_iso_time
 
 __all__ = [
+    "ALREADY_LOADED",
+    "MARKET_MARGIN_S",
     "MIN_TRADES",
+    "OUT_OF_SCOPE",
     "PROTOCOL_END",
     "PROTOCOL_SERIES",
     "PROTOCOL_START",
+    "WANTED",
     "BuildReport",
+    "CalendarChangedError",
+    "Classified",
     "DraftSummary",
+    "Fetched",
+    "IngestSummary",
     "RejectedRecordError",
+    "TradeQuery",
     "Window",
     "build_dataset",
+    "classify_markets",
+    "fetch_series",
+    "ingest_series",
+    "list_series_markets",
     "load_release_calendar",
     "parse_market",
     "parse_trade",
+    "trade_queries",
+    "utc_text",
     "write_calendar_draft",
 ]
 
@@ -72,6 +96,7 @@ PROTOCOL_SERIES = ("KXCPI", "KXCPIYOY", "KXPAYROLLS", "KXGDP", "KXU3", "KXFEDDEC
 PROTOCOL_START = "2024-01-01"
 PROTOCOL_END = "2026-10-31"
 MIN_TRADES = 50  # docs/protocol.md, "Markets kept"
+MARKET_MARGIN_S = 7 * 86400.0  # a draft calendar lists events up to a week outside the window
 
 _CALENDAR_COLUMNS = ("event_ticker", "release_time_utc", "source_url")
 _EPOCH = pd.Timestamp("1970-01-01", tz="UTC")
@@ -258,7 +283,8 @@ class DraftSummary(NamedTuple):
     unreadable: int
 
 
-def _utc_text(seconds: float) -> str:
+def utc_text(seconds: float) -> str:
+    """Unix seconds as an ISO 8601 UTC time with ``Z``, the form of the release calendar."""
     moment = datetime.datetime.fromtimestamp(seconds, datetime.UTC)
     return moment.isoformat().replace("+00:00", "Z")
 
@@ -293,7 +319,7 @@ def write_calendar_draft(markets: Iterable[Mapping[str, Any]], path: str | Path)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle, lineterminator="\n")
         writer.writerow(_CALENDAR_COLUMNS)
-        writer.writerows((event, _utc_text(ts), "") for ts, event in rows)
+        writer.writerows((event, utc_text(ts), "") for ts, event in rows)
     return DraftSummary(len(rows), sorted(events - earliest.keys()), unreadable)
 
 
@@ -527,3 +553,277 @@ def _frames(
         }
     )[_TAPE_COLUMNS]
     return tape, markets_frame, events_frame
+
+
+# ------------------------------------------------------------------------------- fetching
+WANTED = "wanted"  # the market can enter the dataset: its trades are fetched
+ALREADY_LOADED = "already loaded"  # the database has it from an earlier run
+OUT_OF_SCOPE = "out of scope"  # unreadable, or its event has no release in the calendar window
+
+
+class TradeQuery(NamedTuple):
+    """One request for the trades of a market: the endpoint (``"historical"`` or ``"live"``) and
+    the range of trade times in whole Unix seconds (``min_ts`` None: from the start)."""
+
+    endpoint: str
+    min_ts: int | None
+    max_ts: int
+
+
+def trade_queries(release_ts: float, cutoff_ts: float) -> list[TradeQuery]:
+    """The requests that together cover every trade of a market before its release.
+
+    Trades created before the cutoff (``trades_created_ts`` of ``GET /historical/cutoff``) are on
+    the historical endpoint only, later ones on the live endpoint. A release at or before the
+    cutoff needs the historical endpoint alone. A later release needs both: the historical one for
+    the trades before the cutoff and the live one from the cutoff to the release. The ranges are
+    rounded outwards to whole seconds, so they overlap by up to a second at the cutoff and reach
+    the second of the release; the documentation does not say whether ``min_ts`` and ``max_ts`` are
+    inclusive, and :func:`build_dataset` removes repeated ``trade_id`` and trades at or after the
+    release.
+    """
+    last = math.ceil(release_ts)
+    if release_ts <= cutoff_ts:
+        return [TradeQuery("historical", None, last)]
+    return [
+        TradeQuery("historical", None, math.ceil(cutoff_ts)),
+        TradeQuery("live", math.floor(cutoff_ts), last),
+    ]
+
+
+def _is_settled(record: Mapping[str, Any]) -> bool:
+    return record.get("result") in ("yes", "no")
+
+
+def _event_time(record: Mapping[str, Any]) -> float | None:
+    """When a market's event is expected: the expected expiration time, else the close time."""
+    try:
+        market = parse_market(record)
+    except RejectedRecordError:
+        return None
+    expected = market["expected_expiration_ts"]
+    return market["close_ts"] if expected is None else expected
+
+
+def list_series_markets(
+    client: KalshiClient, series: str, *, window: Window | None = None
+) -> list[dict[str, Any]]:
+    """The market records of a series from ``GET /markets`` and ``GET /historical/markets``.
+
+    One record per ticker, sorted by ticker (records without a ticker follow, in the order read).
+    A ticker on both endpoints, which happens when a market is archived while the listing runs,
+    keeps the live record unless only the archived one has a settled ``result``. The listing has
+    no time filter, because the calendar and not a market's close time decides which markets belong
+    to the window. With ``window`` (used for the draft calendar, which has no release times yet)
+    records whose event time (the expected expiration time, else the close time) is more than
+    :data:`MARKET_MARGIN_S` outside the window are left out, and so are none that cannot be read.
+    """
+    chosen: dict[str, dict[str, Any]] = {}
+    unnamed: list[dict[str, Any]] = []
+    for records in (
+        client.iter_markets(series_ticker=series),
+        client.iter_historical_markets(series_ticker=series),
+    ):
+        for record in records:
+            ticker = record.get("ticker")
+            if not isinstance(ticker, str) or not ticker:
+                unnamed.append(record)
+            elif ticker not in chosen or (_is_settled(record) and not _is_settled(chosen[ticker])):
+                chosen[ticker] = record
+    listed = [chosen[ticker] for ticker in sorted(chosen)] + unnamed
+    if window is not None:
+        low, high = window.start_ts - MARKET_MARGIN_S, window.end_ts + MARKET_MARGIN_S
+        listed = [r for r in listed if (t := _event_time(r)) is None or low <= t < high]
+    return listed
+
+
+class Classified(NamedTuple):
+    """A market record and what a fetch does with it: ``state`` is :data:`WANTED`,
+    :data:`ALREADY_LOADED` or :data:`OUT_OF_SCOPE`; ``release_ts`` is the release of the event of a
+    wanted market and None otherwise."""
+
+    market: dict[str, Any]
+    state: str
+    release_ts: float | None
+
+
+def classify_markets(
+    records: Iterable[dict[str, Any]],
+    calendar: pd.DataFrame,
+    window: Window,
+    *,
+    loaded: Container[str] = frozenset(),
+) -> list[Classified]:
+    """Sort market records into those to fetch and those not to, before any trade is requested.
+
+    A market in ``loaded`` is :data:`ALREADY_LOADED`. Otherwise it is :data:`WANTED` when
+    :func:`parse_market` reads it, its event is in ``calendar`` and the release of the event is
+    inside ``window`` (the first three rules of :func:`build_dataset`), else :data:`OUT_OF_SCOPE`.
+    """
+    release_of = _release_times(calendar)
+    classified = []
+    for record in records:
+        ticker = record.get("ticker")
+        if isinstance(ticker, str) and ticker in loaded:
+            classified.append(Classified(record, ALREADY_LOADED, None))
+            continue
+        try:
+            event = parse_market(record)["event"]
+        except RejectedRecordError:
+            classified.append(Classified(record, OUT_OF_SCOPE, None))
+            continue
+        release = release_of.get(event)
+        if release is None or not window.start_ts <= release < window.end_ts:
+            classified.append(Classified(record, OUT_OF_SCOPE, None))
+        else:
+            classified.append(Classified(record, WANTED, release))
+    return classified
+
+
+class Fetched(NamedTuple):
+    """A market record with its trade records. ``trades`` is a list only when ``state`` is
+    :data:`WANTED`; for the other states no trade was requested."""
+
+    market: dict[str, Any]
+    trades: list[dict[str, Any]] | None
+    state: str
+
+
+def fetch_series(
+    client: KalshiClient,
+    series: str,
+    calendar: pd.DataFrame,
+    window: Window,
+    *,
+    cutoff: HistoricalCutoff,
+    loaded: Container[str] = frozenset(),
+) -> Iterator[Fetched]:
+    """Every market record of the series with its trades, one market at a time.
+
+    The listing is :func:`list_series_markets`; the markets are sorted by
+    :func:`classify_markets`; the trades of a wanted market are read from the endpoint or endpoints
+    of :func:`trade_queries` for ``cutoff.trades_created_ts``. A generator: no trade of a market is
+    requested before the consumer asks for it, so a consumer that writes each market to the
+    database before asking for the next loses at most one market if the run is interrupted.
+    """
+    for item in classify_markets(
+        list_series_markets(client, series), calendar, window, loaded=loaded
+    ):
+        if item.state != WANTED or item.release_ts is None:
+            yield Fetched(item.market, None, item.state)
+            continue
+        ticker = item.market["ticker"]
+        trades: list[dict[str, Any]] = []
+        for query in trade_queries(item.release_ts, cutoff.trades_created_ts):
+            read = (
+                client.iter_historical_trades
+                if query.endpoint == "historical"
+                else client.iter_trades
+            )
+            trades.extend(read(ticker=ticker, min_ts=query.min_ts, max_ts=query.max_ts))
+        yield Fetched(item.market, trades, WANTED)
+
+
+class IngestSummary(NamedTuple):
+    """What :func:`ingest_series` did. ``report`` counts what the filters removed among the
+    ``out_of_scope`` and ``fetched`` markets of this run; ``already_loaded`` markets were read by an
+    earlier run and are not in it. ``written`` markets (those that passed every filter) are in the
+    database. ``cutoff_before`` and ``cutoff_after`` are read before and after the run."""
+
+    report: BuildReport
+    listed: int
+    out_of_scope: int
+    already_loaded: int
+    fetched: int
+    written: int
+    cutoff_before: HistoricalCutoff
+    cutoff_after: HistoricalCutoff
+
+    @property
+    def cutoff_moved(self) -> bool:
+        """True if the cutoffs that decide which endpoint holds a trade or a market moved."""
+        before, after = self.cutoff_before, self.cutoff_after
+        return (before.trades_created_ts, before.market_settled_ts) != (
+            after.trades_created_ts,
+            after.market_settled_ts,
+        )
+
+
+class CalendarChangedError(ValueError):
+    """The release calendar disagrees with the database about the release time of an event."""
+
+
+def _check_calendar_drift(stored: Mapping[str, float], release_of: Mapping[str, float]) -> None:
+    changed = sorted(e for e, ts in stored.items() if e in release_of and release_of[e] != ts)
+    if changed:
+        more = f" and {len(changed) - 5} more" if len(changed) > 5 else ""
+        raise CalendarChangedError(
+            f"the calendar gives other release times than the database for "
+            f"{', '.join(changed[:5])}{more}: the stored trades were cut at the old times; use a "
+            "new database or restore the calendar"
+        )
+
+
+def ingest_series(
+    conn: sqlite3.Connection,
+    client: KalshiClient,
+    series: str,
+    calendar: pd.DataFrame,
+    window: Window,
+    *,
+    min_trades: int = MIN_TRADES,
+    log: Callable[[str], None] = print,
+) -> IngestSummary:
+    """Read a series from the API and store the markets that pass the protocol filters.
+
+    Every market is processed in turn: its trades are read, :func:`build_dataset` applies the
+    filters to that one market (the counts add up across markets, ``BuildReport.__add__``) and, if
+    the market is kept, ``panel.write_dataset`` stores it in its own transaction. Markets already
+    in the database are skipped, so a run that stopped (a ``KalshiApiError``, an interrupt) is
+    resumed by running it again. A calendar that gives another release time than the database for
+    an event raises :class:`CalendarChangedError` before anything is requested. One line per
+    market read goes to ``log``.
+    """
+    release_of = _release_times(calendar)
+    panel.create_schema(conn)
+    _check_calendar_drift(panel.stored_release_times(conn), release_of)
+    cutoff = client.historical_cutoff()
+    loaded = panel.loaded_markets(conn)
+    log(
+        f"{series}: trades created before {utc_text(cutoff.trades_created_ts)} are on the "
+        f"historical endpoint; {len(loaded)} markets are already in the database"
+    )
+    report = BuildReport(min_trades=min_trades)
+    counts = {WANTED: 0, ALREADY_LOADED: 0, OUT_OF_SCOPE: 0}
+    written = 0
+    for item in fetch_series(client, series, calendar, window, cutoff=cutoff, loaded=loaded):
+        counts[item.state] += 1
+        if item.state == ALREADY_LOADED:
+            continue
+        ticker = str(item.market.get("ticker"))
+        tape, markets, events, part = build_dataset(
+            [item.market],
+            {ticker: item.trades or []},
+            calendar,
+            min_trades=min_trades,
+            window_start=window.start_ts,
+            window_end=window.end_ts,
+        )
+        report += part
+        if len(markets):
+            panel.write_dataset(conn, tape, markets, events, source=panel.SOURCE_KALSHI_API)
+            written += 1
+        if item.state == WANTED:
+            left = part.trades_kept + part.trades_in_dropped_markets  # one of the two is zero
+            fate = "stored" if len(markets) else f"dropped (fewer than {min_trades})"
+            log(f"{ticker}: {part.trades_in} trades read, {left} left after the filters, {fate}")
+    return IngestSummary(
+        report=report,
+        listed=sum(counts.values()),
+        out_of_scope=counts[OUT_OF_SCOPE],
+        already_loaded=counts[ALREADY_LOADED],
+        fetched=counts[WANTED],
+        written=written,
+        cutoff_before=cutoff,
+        cutoff_after=client.historical_cutoff(),
+    )

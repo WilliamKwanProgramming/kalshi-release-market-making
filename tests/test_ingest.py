@@ -1,30 +1,46 @@
-"""Turning Kalshi API records into the data contract (src/kalshi_mm/ingest.py).
+"""Turning Kalshi API records into the data contract (src/kalshi_mm/ingest.py) and the command
+line that fetches them (scripts/fetch_kalshi.py).
 
 The records are canned and shaped like the documentation read on 2026-11-13 (docs/data.md).
 Expected times come from ``calendar.timegm``, which shares no code with the parser under test.
-Every filter of ``build_dataset`` has a case that sits exactly on its boundary.
+Every filter of ``build_dataset`` has a case that sits exactly on its boundary. The fetching tests
+run the client against a fake of the endpoints (``FakeApi``) that answers from canned data, and
+compare what lands in SQLite, read back, with frames built by hand from the same canned data.
 """
 
 import calendar
 import dataclasses
+import importlib.util
+import json
 import pathlib
 import re
+import sqlite3
+import types
+import urllib.parse
+from contextlib import closing
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from kalshi_mm import ingest
+from kalshi_mm import ingest, panel
 from kalshi_mm.ingest import (
     BuildReport,
+    CalendarChangedError,
     RejectedRecordError,
     Window,
     build_dataset,
+    classify_markets,
+    fetch_series,
+    ingest_series,
+    list_series_markets,
     load_release_calendar,
     parse_market,
     parse_trade,
+    trade_queries,
     write_calendar_draft,
 )
+from kalshi_mm.kalshi_api import HistoricalCutoff, KalshiApiError, KalshiClient
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 RELEASE = "2026-10-24T12:30:00Z"
@@ -763,3 +779,692 @@ def test_the_summary_lines_state_the_counts(tmp_path):
     assert "1 read" in markets_line and "kept 1" in markets_line
     assert "52 read" in trades_line and "1 price_outside_0_1" in trades_line
     assert "1 block trades" in trades_line and "kept 50" in trades_line
+
+
+# ------------------------------------------------------------------- the fake endpoints
+BASE = "https://example.test/trade-api/v2"
+CUTOFFS = {"market_settled_ts": "2026-09-15T00:00:00Z",
+           "trades_created_ts": "2026-10-20T00:00:00Z",
+           "orders_updated_ts": "2026-10-30T00:00:00Z"}
+CUTOFF = HistoricalCutoff(market_settled_ts=unix(2026, 9, 15, 0, 0, 0),
+                          trades_created_ts=unix(2026, 10, 20, 0, 0, 0),
+                          orders_updated_ts=unix(2026, 10, 30, 0, 0, 0))
+CUTOFF_TS = CUTOFF.trades_created_ts
+R_SEP = unix(2026, 9, 11, 12, 30, 0)
+SEP, OCT, JUL, NOV = "KXCPI-26SEP", "KXCPI-26OCT", "KXCPI-26JUL", "KXCPI-26NOV"
+S3, S4, S9, O3, O4 = (f"{SEP}-T0.3", f"{SEP}-T0.4", f"{SEP}-T0.9", f"{OCT}-T0.3", f"{OCT}-T0.4")
+J3, N3 = f"{JUL}-T0.3", f"{NOV}-T0.3"
+FETCH_WINDOW = Window.from_dates("2026-09-01", "2026-10-31")
+SOURCE_URL = "https://www.bls.gov/schedule/"
+CALENDAR_ROWS = (
+    (SEP, "2026-09-11T12:30:00Z", SOURCE_URL),
+    (OCT, RELEASE, SOURCE_URL),
+    (JUL, "2026-07-15T12:30:00Z", SOURCE_URL),
+)
+TRADE_PATHS = ("/historical/trades", "/markets/trades")
+STORED_COLUMNS = "market, ts, seq, price, size, side, trade_id"
+
+
+def zulu(seconds):
+    """A timestamp with ``Z`` of whole Unix seconds."""
+    return pd.Timestamp(seconds, unit="s", tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def no_log(line):
+    """A log that drops its lines."""
+
+
+class FakeApi:
+    """The public endpoints, answering from canned records.
+
+    ``live_markets`` and ``historical_markets`` map a series to its market records, ``trades`` maps
+    a ticker to its trade records. The historical trade endpoint serves the trades created before
+    ``CUTOFF_TS`` and the live one those created at or after it (``overlap``: both serve a trade
+    created exactly at the cutoff). ``min_ts`` and ``max_ts`` are inclusive and the newest trades
+    come first. A page holds at most ``page_size`` records whatever ``limit`` says. ``cutoffs``
+    lists the answers of the cutoff endpoint, the last one repeated. After ``fail_after`` requests
+    every answer is HTTP 500. ``urls`` records every request.
+    """
+
+    def __init__(self, live_markets, historical_markets, trades, *, cutoffs=(CUTOFFS,),
+                 page_size=3, overlap=False, fail_after=None):
+        self.live_markets, self.historical_markets = live_markets, historical_markets
+        self.trades, self.cutoffs, self.page_size = trades, list(cutoffs), page_size
+        self.overlap, self.fail_after = overlap, fail_after
+        self.urls = []
+
+    @staticmethod
+    def split(url):
+        """``(path, query)`` of a URL, the path without the base and the query as a dict."""
+        parts = urllib.parse.urlsplit(url)
+        query = {k: v[0] for k, v in urllib.parse.parse_qs(parts.query).items()}
+        return parts.path.removeprefix("/trade-api/v2"), query
+
+    def __call__(self, url):
+        self.urls.append(url)
+        if self.fail_after is not None and len(self.urls) > self.fail_after:
+            return 500, {}, b'{"message": "internal error"}'
+        path, query = self.split(url)
+        if path == "/historical/cutoff":
+            answer = self.cutoffs.pop(0) if len(self.cutoffs) > 1 else self.cutoffs[0]
+            return 200, {}, json.dumps(answer).encode()
+        if path in ("/markets", "/historical/markets"):
+            source = self.live_markets if path == "/markets" else self.historical_markets
+            key, records = "markets", source.get(query["series_ticker"], [])
+        elif path in TRADE_PATHS:
+            key, records = "trades", self._trades(path, query)
+        else:
+            return 404, {}, b'{"message": "not found"}'
+        start, size = int(query.get("cursor", 0)), min(int(query["limit"]), self.page_size)
+        more = start + size < len(records)
+        body = {key: records[start:start + size], "cursor": str(start + size) if more else ""}
+        return 200, {}, json.dumps(body).encode()
+
+    def _trades(self, path, query):
+        low, high = float(query.get("min_ts", "-inf")), float(query.get("max_ts", "inf"))
+        found = []
+        for record in self.trades.get(query["ticker"], []):
+            ts = pd.Timestamp(record["created_time"]).timestamp()
+            held = ts < CUTOFF_TS if path == "/historical/trades" else ts >= CUTOFF_TS
+            if low <= ts <= high and (held or (self.overlap and ts == CUTOFF_TS)):
+                found.append((ts, record))
+        found.sort(key=lambda pair: (pair[0], pair[1]["trade_id"]), reverse=True)
+        return [record for _, record in found]
+
+    def requests(self, *paths):
+        """``(path, query)`` of the first page of every request to one of the paths."""
+        split = [self.split(url) for url in self.urls]
+        return [(p, q) for p, q in split if p in paths and "cursor" not in q]
+
+    def trade_requests(self):
+        """The set of ``(path, ticker, min_ts, max_ts)`` of the trade requests."""
+        return {(p, q["ticker"], q.get("min_ts"), q.get("max_ts"))
+                for p, q in self.requests(*TRADE_PATHS)}
+
+    def tickers_requested(self):
+        """The tickers whose trades were requested."""
+        return {ticker for _, ticker, _, _ in self.trade_requests()}
+
+
+class RunStoppedError(Exception):
+    """What a killed process or a Ctrl-C would raise inside the client."""
+
+
+def stop_after(api, requests):
+    """A transport that answers as ``api`` does for ``requests`` requests and then raises."""
+    served = []
+
+    def transport(url):
+        if len(served) >= requests:
+            raise RunStoppedError(url)
+        served.append(url)
+        return api(url)
+
+    return transport
+
+
+def make_client(transport, **kwargs):
+    return KalshiClient(BASE, transport=transport, sleep=lambda seconds: None, **kwargs)
+
+
+@pytest.fixture
+def db():
+    with closing(sqlite3.connect(":memory:")) as connection:
+        yield connection
+
+
+def canned_trades(ticker, times):
+    """Trade records at the given Unix times and the rows they must become: ``(ts, price, size,
+    side, trade_id)``. Sides alternate and prices cycle through 0.40 to 0.59."""
+    records, rows = [], []
+    for i, ts in enumerate(times):
+        side = 1 if i % 2 == 0 else -1
+        price, count, trade_id = f"{0.40 + 0.01 * (i % 20):.4f}", f"{1 + i % 5}.00", f"{ticker}-{i}"
+        records.append(trade_record(ts=zulu(ts), price=price, count=count, trade_id=trade_id,
+                                    side="yes" if side == 1 else "no", ticker=ticker))
+        rows.append((ts, float(price), float(count), side, trade_id))
+    return records, rows
+
+
+def never_kept(ticker, release):
+    """A block trade, a trade at the release and one after it: no rule keeps them. The last is
+    beyond the range a fetch asks for, so the endpoints do not serve it."""
+    return [trade_record(ts=zulu(release - 3000.0), block=True, trade_id=f"{ticker}-block",
+                         ticker=ticker),
+            trade_record(ts=zulu(release), trade_id=f"{ticker}-at-release", ticker=ticker),
+            trade_record(ts=zulu(release + 5.0), trade_id=f"{ticker}-after", ticker=ticker)]
+
+
+def canned_market(ticker, event, close, result="yes", **extra):
+    """A market record that opens on 2026-08-01 and closes, and is expected to expire, at
+    ``close``; ``extra`` replaces fields (``open_time``, ``expected``, ...)."""
+    fields = {"open_time": "2026-08-01T12:00:00Z", "expected": close, **extra}
+    return market_record(ticker, event, result=result, close_time=close, **fields)
+
+
+def canned_world():
+    """The records of a series and the frames a run must store from them.
+
+    September's CPI releases before the trade cutoff (its trades are on the historical endpoint),
+    October's after it (its trades are on both, one exactly at the cutoff). The markets: S3 has 60
+    trades to keep, plus a repeated record, one with price 1, a block trade and one at the release;
+    S4 has 55 and settled no; S9 has 10 (too few); O3 has 61 to keep, a block trade and one at the
+    release, and O4 has exactly 50 and has not settled. July's market is outside the window,
+    November's event is not in the calendar and two records cannot be read.
+    """
+    sep_times = [R_SEP - 10800.0 + 120.0 * i for i in range(60)]
+    oct_before = [CUTOFF_TS - 43200.0 + 600.0 * i for i in range(30)]
+    oct_after = [CUTOFF_TS + 600.0 * j for j in range(31)]  # the first is exactly at the cutoff
+    sep3, rows_s3 = canned_trades(S3, sep_times)
+    sep4, rows_s4 = canned_trades(S4, sep_times[:55])
+    oct3, rows_o3 = canned_trades(O3, oct_before + oct_after)
+    oct4, rows_o4 = canned_trades(O4, oct_before[:25] + oct_after[:25])
+    bad_price = trade_record(ts=zulu(R_SEP - 4000.0), price="1.0000", trade_id="bad", ticker=S3)
+    trades = {
+        S3: [*sep3, dict(sep3[3]), bad_price, *never_kept(S3, R_SEP)],
+        S4: sep4,
+        S9: canned_trades(S9, sep_times[:10])[0],
+        O3: [*oct3, *never_kept(O3, RELEASE_TS)],
+        O4: oct4,
+        J3: canned_trades(J3, sep_times)[0],
+        N3: canned_trades(N3, sep_times)[0],
+    }
+    historical = [canned_market(S3, SEP, zulu(R_SEP)), canned_market(S4, SEP, zulu(R_SEP), "no"),
+                  canned_market(S9, SEP, zulu(R_SEP), "no"),
+                  canned_market(J3, JUL, "2026-07-15T12:30:00Z", open_time="2026-06-01T12:00:00Z")]
+    live = [canned_market(O3, OCT, RELEASE), canned_market(O4, OCT, RELEASE, ""),
+            canned_market(N3, NOV, "2026-11-12T13:30:00Z"),
+            {"ticker": "KXCPI-NO-EVENT", "status": "open"}, {"event_ticker": SEP}]
+
+    def tape_frame(ticker, event, rows):
+        rows = sorted(rows, key=lambda r: (r[0], r[4]))
+        return pd.DataFrame({
+            "event": event, "market": ticker, "ts": [r[0] for r in rows],
+            "seq": np.arange(len(rows), dtype=np.int64), "price": [r[1] for r in rows],
+            "size": [r[2] for r in rows], "side": np.array([r[3] for r in rows], dtype=np.int8)})
+
+    tape = pd.concat([tape_frame(O3, OCT, rows_o3), tape_frame(O4, OCT, rows_o4),
+                      tape_frame(S3, SEP, rows_s3), tape_frame(S4, SEP, rows_s4)],
+                     ignore_index=True)
+    markets = pd.DataFrame({
+        "market": [S3, S4, O3, O4], "event": [SEP, SEP, OCT, OCT],
+        "outcome": [1.0, 0.0, 1.0, np.nan], "open_ts": unix(2026, 8, 1, 12, 0, 0),
+        "close_ts": [R_SEP, R_SEP, RELEASE_TS, RELEASE_TS]})
+    events = pd.DataFrame({"event": [SEP, OCT], "release_ts": [R_SEP, RELEASE_TS],
+                           "series": "KXCPI"})
+    return types.SimpleNamespace(live=live, historical=historical, trades=trades, tape=tape,
+                                 markets=markets, events=events)
+
+
+def make_api(world, **kwargs):
+    return FakeApi({"KXCPI": world.live}, {"KXCPI": world.historical}, world.trades, **kwargs)
+
+
+def run_ingest(db, tmp_path, transport, rows=CALENDAR_ROWS, log=no_log, **kwargs):
+    return ingest_series(db, make_client(transport), "KXCPI", calendar_frame(tmp_path, rows),
+                         FETCH_WINDOW, log=log, **kwargs)
+
+
+def assert_stored(db, world):
+    """The database reads back as the frames of ``canned_world``, to the last bit."""
+    stored = panel.read_dataset(db)
+    for got, want in zip(stored, (world.tape, world.markets, world.events), strict=True):
+        pd.testing.assert_frame_equal(got, want, check_exact=True)
+
+
+def stored_rows(db):
+    return db.execute(f"SELECT {STORED_COLUMNS} FROM trades ORDER BY market, ts, seq").fetchall()
+
+
+# ---------------------------------------------------------------------------- trade_queries
+def test_a_release_before_the_cutoff_needs_only_the_historical_endpoint():
+    assert trade_queries(100.0, 200.0) == [("historical", None, 100)]
+    assert trade_queries(200.0, 200.0) == [("historical", None, 200)]  # trades are before it
+
+
+def test_a_release_after_the_cutoff_needs_both_endpoints_split_at_the_cutoff():
+    assert trade_queries(201.0, 200.0) == [("historical", None, 200), ("live", 200, 201)]
+
+
+def test_query_ranges_are_rounded_outwards_to_whole_seconds():
+    got = trade_queries(1000.5, 500.25)
+    assert got == [("historical", None, 501), ("live", 500, 1001)]
+    assert all(isinstance(q.max_ts, int) for q in got)
+    assert trade_queries(1000.5, 2000.0) == [("historical", None, 1001)]
+
+
+# ------------------------------------------------------------------------ list_series_markets
+def listing(live, historical, **kwargs):
+    client = make_client(FakeApi({"S": live}, {"S": historical}, {}))
+    return list_series_markets(client, "S", **kwargs)
+
+
+def test_the_listing_keeps_one_record_per_ticker_sorted_by_ticker():
+    live = [canned_market("B-1", "E", RELEASE), canned_market("A-1", "E", RELEASE)]
+    historical = [canned_market("C-1", "E", RELEASE), canned_market("A-1", "E", RELEASE, "no")]
+    got = listing(live, historical)
+    assert [(r["ticker"], r["result"]) for r in got] == [("A-1", "yes"), ("B-1", "yes"),
+                                                         ("C-1", "yes")]
+
+
+def test_an_archived_record_replaces_a_live_one_only_if_it_is_settled_and_the_live_one_is_not():
+    live = [canned_market("A-1", "E", RELEASE, ""), canned_market("B-1", "E", RELEASE, ""),
+            canned_market("C-1", "E", RELEASE, "yes"), canned_market("D-1", "E", RELEASE, "")]
+    historical = [canned_market("A-1", "E", RELEASE, "no"),
+                  canned_market("B-1", "E", RELEASE, "scalar"),
+                  canned_market("C-1", "E", RELEASE, "no"), canned_market("D-1", "E", RELEASE, "")]
+    assert {r["ticker"]: r["result"] for r in listing(live, historical)} == {
+        "A-1": "no", "B-1": "", "C-1": "yes", "D-1": ""}
+
+
+def test_a_ticker_repeated_inside_one_listing_is_settled_if_any_record_is():
+    live = [canned_market("A-1", "E", RELEASE, ""), canned_market("A-1", "E", RELEASE, "yes"),
+            canned_market("A-1", "E", RELEASE, "")]
+    assert [r["result"] for r in listing(live, [])] == ["yes"]
+
+
+def test_records_without_a_ticker_are_kept_after_the_others_in_the_order_read():
+    nameless, blank = {"event_ticker": "E", "note": 1}, {"ticker": "", "event_ticker": "E"}
+    got = listing([nameless, canned_market("B-1", "E", RELEASE)],
+                  [blank, canned_market("A-1", "E", RELEASE)])
+    assert [r.get("ticker") for r in got] == ["A-1", "B-1", None, ""]
+
+
+def test_an_empty_listing_is_an_empty_list():
+    assert listing([], []) == []
+
+
+def test_a_draft_window_keeps_events_up_to_seven_days_outside_it():
+    window = Window.from_dates("2026-09-01", "2026-09-30")  # [2026-09-01, 2026-10-01)
+    assert ingest.MARKET_MARGIN_S == 7 * 86400.0
+    closes = {"low-edge": "2026-08-25T00:00:00Z", "below": "2026-08-24T23:59:59Z",
+              "inside": "2030-01-01T00:00:00Z", "above": "2026-10-07T23:59:59Z",
+              "high-edge": "2026-10-08T00:00:00Z", "far": "2026-12-09T00:00:00Z"}
+    records = [canned_market(name, "E", close, expected=None) for name, close in closes.items()]
+    records[2]["expected_expiration_time"] = "2026-09-20T00:00:00Z"  # it wins over the close time
+    unreadable = {"ticker": "unreadable", "event_ticker": "E", "open_time": "garbage"}
+    kept = [r["ticker"] for r in listing(records + [unreadable], [], window=window)]
+    # the edge a week before the window is inside, the edge a week after it is outside
+    assert kept == ["above", "inside", "low-edge", "unreadable"]
+    assert len(listing(records + [unreadable], [])) == 7  # no window, no filter
+
+
+# ------------------------------------------------------------------------- classify_markets
+def test_markets_are_sorted_into_wanted_loaded_and_out_of_scope(tmp_path):
+    rows = [*CALENDAR_ROWS, ("KXCPI-26AUG", zulu(FETCH_WINDOW.start_ts), SOURCE_URL),
+            ("KXCPI-26DEC", zulu(FETCH_WINDOW.end_ts), SOURCE_URL)]
+    records = [canned_market(S3, SEP, RELEASE), canned_market(O3, OCT, RELEASE),
+               canned_market(J3, JUL, RELEASE), canned_market(N3, NOV, RELEASE),
+               canned_market("U-1", "KXCPI-26AUG", RELEASE),
+               canned_market("U-2", "KXCPI-26DEC", RELEASE),
+               {"ticker": "KXCPI-X"}, {"event_ticker": SEP}, canned_market(S4, SEP, RELEASE)]
+    got = classify_markets(records, calendar_frame(tmp_path, rows), FETCH_WINDOW, loaded={S4})
+    assert [(c.state, c.release_ts) for c in got] == [
+        (ingest.WANTED, R_SEP), (ingest.WANTED, RELEASE_TS),
+        (ingest.OUT_OF_SCOPE, None),  # July: the release is before the window
+        (ingest.OUT_OF_SCOPE, None),  # November: the event is not in the calendar
+        (ingest.WANTED, FETCH_WINDOW.start_ts),  # a release at the start of the window is inside
+        (ingest.OUT_OF_SCOPE, None),  # a release at the end of the window is outside
+        (ingest.OUT_OF_SCOPE, None), (ingest.OUT_OF_SCOPE, None),  # unreadable records
+        (ingest.ALREADY_LOADED, None)]
+    assert [c.market for c in got] == records
+
+
+def test_a_stored_market_is_not_fetched_even_if_its_record_cannot_be_read_any_more(tmp_path):
+    got = classify_markets([{"ticker": S3}], calendar_frame(tmp_path), FETCH_WINDOW, loaded={S3})
+    assert [c.state for c in got] == [ingest.ALREADY_LOADED]
+
+
+# ----------------------------------------------------------------------------- fetch_series
+def fetch(api, tmp_path, **kwargs):
+    return fetch_series(make_client(api), "KXCPI", calendar_frame(tmp_path, CALENDAR_ROWS),
+                        FETCH_WINDOW, cutoff=CUTOFF, **kwargs)
+
+
+def test_fetch_series_requests_the_trades_of_a_market_only_when_the_consumer_asks(tmp_path):
+    api = make_api(canned_world())
+    seen = []
+    for item in fetch(api, tmp_path):
+        seen.append((item.market.get("ticker"), item.state, item.trades is None))
+        if item.state == ingest.WANTED:
+            break
+    assert seen == [(J3, ingest.OUT_OF_SCOPE, True), (N3, ingest.OUT_OF_SCOPE, True),
+                    (O3, ingest.WANTED, False)]
+    assert api.tickers_requested() == {O3}  # nothing was read ahead
+
+
+def test_fetch_series_reads_the_pages_of_each_market_from_the_endpoints_that_hold_them(tmp_path):
+    api = make_api(canned_world())
+    got = {item.market.get("ticker"): item for item in fetch(api, tmp_path, loaded={S4})}
+    assert len(got) == 9 and got[S4].state == ingest.ALREADY_LOADED and got[S4].trades is None
+    # S3: 60 + repeat + price 1 + block + release; the trade after the release is not asked for
+    assert [len(got[t].trades) for t in (O3, O4, S3, S9)] == [63, 50, 64, 10]
+    ids = {t["trade_id"] for t in got[O3].trades}
+    # the last trade before the cutoff and the one exactly at it, then the two the filters remove
+    assert {f"{O3}-29", f"{O3}-30", f"{O3}-block", f"{O3}-at-release"} <= ids
+    assert f"{O3}-after" not in ids
+    assert all(got[t].trades is None for t in (J3, N3, "KXCPI-NO-EVENT", None))
+    assert api.tickers_requested() == {O3, O4, S3, S9}
+
+
+# ----------------------------------------------------------------------------- ingest_series
+def test_a_run_stores_what_the_filters_keep_and_reads_back_as_the_expected_frames(tmp_path, db):
+    world, lines = canned_world(), []
+    api = make_api(world)
+    summary = run_ingest(db, tmp_path, api, log=lines.append)
+    assert_stored(db, world)
+    assert panel.get_source(db) == "kalshi-public-api"
+    assert (summary.listed, summary.out_of_scope, summary.already_loaded, summary.fetched,
+            summary.written) == (9, 4, 0, 5, 4)
+    assert summary.cutoff_before == summary.cutoff_after == CUTOFF and not summary.cutoff_moved
+    r = summary.report
+    assert r.markets_in == 9
+    assert r.markets_rejected == {"missing_event_ticker": 1, "missing_ticker": 1}
+    assert (r.markets_no_release, r.markets_outside_window, r.markets_too_few_trades,
+            r.markets_kept, r.markets_outcome_missing) == (1, 1, 1, 4, 1)
+    assert r.trades_in == 242 and r.trades_rejected == {"price_outside_0_1": 1}
+    assert (r.trades_duplicate, r.trades_block, r.trades_at_or_after_release,
+            r.trades_in_dropped_markets, r.trades_kept) == (1, 2, 2, 10, 226)
+    assert_report_adds_up(r)
+    first, last = str(int(R_SEP)), str(int(CUTOFF_TS))
+    assert api.trade_requests() == {
+        ("/historical/trades", S3, None, first), ("/historical/trades", S4, None, first),
+        ("/historical/trades", S9, None, first),
+        ("/historical/trades", O3, None, last), ("/markets/trades", O3, last, str(int(RELEASE_TS))),
+        ("/historical/trades", O4, None, last), ("/markets/trades", O4, last, str(int(RELEASE_TS)))}
+    assert len(api.requests("/historical/cutoff")) == 2  # before and after the run
+    assert lines == [
+        "KXCPI: trades created before 2026-10-20T00:00:00Z are on the historical endpoint; "
+        "0 markets are already in the database",
+        f"{O3}: 63 trades read, 61 left after the filters, stored",
+        f"{O4}: 50 trades read, 50 left after the filters, stored",
+        f"{S3}: 64 trades read, 60 left after the filters, stored",
+        f"{S4}: 55 trades read, 55 left after the filters, stored",
+        f"{S9}: 10 trades read, 10 left after the filters, dropped (fewer than 50)"]
+
+
+def test_a_trade_on_both_endpoints_at_the_cutoff_is_stored_once(tmp_path, db):
+    world = canned_world()
+    summary = run_ingest(db, tmp_path, make_api(world, overlap=True))
+    assert_stored(db, world)
+    # O3 and O4 each have a trade created exactly at the cutoff: read twice, counted once
+    assert summary.report.trades_in == 244 and summary.report.trades_duplicate == 3
+
+
+def test_a_second_run_changes_nothing_and_does_not_fetch_stored_markets_again(tmp_path, db):
+    world = canned_world()
+    run_ingest(db, tmp_path, make_api(world))
+    before = stored_rows(db)
+    api = make_api(world)
+    second = run_ingest(db, tmp_path, api)
+    assert_stored(db, world)
+    assert stored_rows(db) == before
+    # S9 was dropped for having too few trades, so it was not stored: it is read and dropped again
+    assert (second.already_loaded, second.fetched, second.written) == (4, 1, 0)
+    assert api.tickers_requested() == {S9}
+    assert second.report.markets_in == 5 and second.report.markets_too_few_trades == 1
+    assert second.report.trades_in == 10 and second.report.markets_kept == 0
+
+
+def test_a_run_that_stops_at_any_request_resumes_to_the_same_database(tmp_path):
+    world = canned_world()
+    with closing(sqlite3.connect(":memory:")) as clean:
+        clean_api = make_api(world)
+        run_ingest(clean, tmp_path, clean_api)
+        assert_stored(clean, world)
+        total = len(clean_api.urls)
+    assert total > 80
+    sizes = world.tape["market"].value_counts()
+    for stop in range(1, total, 5):
+        with closing(sqlite3.connect(":memory:")) as db:
+            with pytest.raises(RunStoppedError):
+                run_ingest(db, tmp_path, stop_after(make_api(world), stop))
+            half = panel.read_dataset(db)
+            stored = set(half[1]["market"])
+            # a market is stored whole or not at all
+            assert dict(half[0]["market"].value_counts()) == {m: sizes[m] for m in stored if m}
+            api = make_api(world)
+            resumed = run_ingest(db, tmp_path, api)
+            assert resumed.already_loaded == len(stored)
+            assert not api.tickers_requested() & stored
+            assert_stored(db, world)
+
+
+def test_a_calendar_with_another_release_time_than_the_database_is_refused_first(tmp_path, db):
+    run_ingest(db, tmp_path, make_api(canned_world()))
+    moved = [(SEP, "2026-09-11T13:30:00Z", SOURCE_URL), CALENDAR_ROWS[1], CALENDAR_ROWS[2]]
+    api = make_api(canned_world())
+    with pytest.raises(CalendarChangedError, match=SEP):
+        run_ingest(db, tmp_path, api, rows=moved)
+    assert api.urls == []  # nothing was requested
+    assert_stored(db, canned_world())  # and nothing was changed
+
+
+def test_the_calendar_may_leave_out_events_that_are_stored(tmp_path, db):
+    run_ingest(db, tmp_path, make_api(canned_world()))
+    again = run_ingest(db, tmp_path, make_api(canned_world()), rows=[CALENDAR_ROWS[2]])
+    assert again.already_loaded == 4
+    assert_stored(db, canned_world())
+
+
+def test_a_moved_trade_cutoff_is_reported_but_a_moved_orders_cutoff_is_not(tmp_path):
+    for change, moved in (({"trades_created_ts": "2026-10-21T00:00:00Z"}, True),
+                          ({"market_settled_ts": "2026-09-16T00:00:00Z"}, True),
+                          ({"orders_updated_ts": "2026-10-31T00:00:00Z"}, False)):
+        with closing(sqlite3.connect(":memory:")) as db:
+            api = make_api(canned_world(), cutoffs=[CUTOFFS, {**CUTOFFS, **change}])
+            summary = run_ingest(db, tmp_path, api)
+            assert summary.cutoff_moved is moved
+            assert summary.cutoff_before == CUTOFF
+
+
+def test_a_series_without_markets_stores_nothing(tmp_path, db):
+    summary = run_ingest(db, tmp_path, FakeApi({}, {}, {}))
+    assert (summary.listed, summary.written, summary.report.markets_in) == (0, 0, 0)
+    assert panel.loaded_markets(db) == set()
+    with pytest.raises(ValueError, match="no source"):
+        panel.get_source(db)  # nothing was written, so no source was recorded
+
+
+def test_the_minimum_number_of_trades_can_be_changed(tmp_path, db):
+    summary = run_ingest(db, tmp_path, make_api(canned_world()), min_trades=10)
+    assert summary.written == 5 and summary.report.markets_too_few_trades == 0
+    assert panel.read_dataset(db)[0]["market"].value_counts()[S9] == 10
+    with closing(sqlite3.connect(":memory:")) as other:
+        summary = run_ingest(other, tmp_path, make_api(canned_world()), min_trades=11)
+        assert summary.written == 4 and summary.report.markets_too_few_trades == 1
+
+
+def test_a_failing_endpoint_stops_the_run_with_the_clients_error(tmp_path, db):
+    with pytest.raises(KalshiApiError, match="HTTP 500"):
+        run_ingest(db, tmp_path, make_api(canned_world(), fail_after=0))
+    assert panel.loaded_markets(db) == set()
+
+
+# ------------------------------------------------------------------------ the command line
+@pytest.fixture(scope="module")
+def script():
+    spec = importlib.util.spec_from_file_location("fetch_kalshi",
+                                                  REPO / "scripts" / "fetch_kalshi.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def run_cli(script, tmp_path, *extra, transport=None, rows=CALENDAR_ROWS, **client_kwargs):
+    """Run the script's ``main`` on the fake endpoints and return its exit status and output.
+
+    The calendar is written to ``tmp_path`` unless ``rows`` is None; ``extra`` arguments come after
+    the usual ones and win over them."""
+    transport = transport if transport is not None else make_api(canned_world())
+    if rows is not None:
+        write_calendar(tmp_path, rows)
+    arguments = ["--series", "KXCPI", "--start", "2026-09-01", "--end", "2026-10-31",
+                 "--db", str(tmp_path / "k.sqlite"),
+                 "--calendar", str(tmp_path / "release_calendar.csv"), *extra]
+    lines = []
+    status = script.main(arguments, client=make_client(transport, **client_kwargs),
+                         out=lines.append)
+    return status, "\n".join(lines)
+
+
+def test_the_defaults_are_the_series_dates_and_minimum_of_the_protocol(script):
+    args = script.build_parser().parse_args([])
+    assert args.series == list(ingest.PROTOCOL_SERIES) and args.min_trades == ingest.MIN_TRADES
+    assert (args.start, args.end) == (ingest.PROTOCOL_START, ingest.PROTOCOL_END)
+    assert args.db == pathlib.Path("data/kalshi.sqlite")
+    assert args.calendar == pathlib.Path("data/release_calendar.csv")
+    assert args.calendar_draft is None and args.dry_run is False
+
+
+def test_a_run_prints_the_agreement_notice_and_the_counts_and_stores_the_data(script, tmp_path):
+    status, text = run_cli(script, tmp_path)
+    assert status == 0
+    assert "Developer Agreement" in text and "section 3.1" in text and "no credentials" in text
+    assert ("KXCPI: 9 market records: 4 out of scope, 0 already in the database, 5 fetched, "
+            "4 stored") in text
+    assert "markets: 9 read" in text and "trades: 242 read" in text and "kept 226" in text
+    assert text.splitlines()[-1] == f"done; the database is {tmp_path / 'k.sqlite'}"
+    with closing(sqlite3.connect(tmp_path / "k.sqlite")) as conn:
+        assert_stored(conn, canned_world())
+        assert panel.get_source(conn) == "kalshi-public-api"
+
+
+def test_the_minimum_number_of_trades_and_the_database_folder_are_taken_from_the_arguments(
+        script, tmp_path):
+    database = tmp_path / "nested" / "folder" / "k.sqlite"
+    status, text = run_cli(script, tmp_path, "--min-trades", "10", "--db", str(database))
+    assert status == 0 and "5 fetched, 5 stored" in text
+    with closing(sqlite3.connect(database)) as conn:
+        assert len(panel.loaded_markets(conn)) == 5
+
+
+def test_several_series_are_fetched_in_turn(script, tmp_path):
+    status, text = run_cli(script, tmp_path, "--series", "KXCPI", "KXU3")
+    assert status == 0 and "KXCPI: 9 market records" in text and "KXU3: 0 market records" in text
+    assert "KXU3: no market was stored" in text and "KXCPI: no market was stored" not in text
+
+
+def test_running_the_same_command_again_resumes(script, tmp_path):
+    run_cli(script, tmp_path)
+    api = make_api(canned_world())
+    status, text = run_cli(script, tmp_path, transport=api)
+    assert status == 0 and "4 already in the database, 1 fetched, 0 stored" in text
+    assert "reported as empty" not in text  # four markets are stored: the series is not empty
+    assert api.tickers_requested() == {S9}
+
+
+def test_a_dry_run_lists_what_would_be_fetched_and_requests_no_trade(script, tmp_path):
+    api = make_api(canned_world())
+    status, text = run_cli(script, tmp_path, "--dry-run", transport=api)
+    assert status == 0 and api.trade_requests() == set()
+    assert ("KXCPI: 9 market records. Markets to fetch: 5, in 2 events (3 on the historical "
+            "endpoint only, 2 on both). Already in") in text
+    assert "Unreadable, outside the calendar or outside the window: 4." in text
+    assert "No trade was requested and nothing was written" in text
+    assert not (tmp_path / "k.sqlite").exists()
+
+
+def test_a_dry_run_skips_the_markets_already_stored_and_leaves_the_database_alone(script, tmp_path):
+    run_cli(script, tmp_path)
+    before = (tmp_path / "k.sqlite").read_bytes()
+    api = make_api(canned_world())
+    status, text = run_cli(script, tmp_path, "--dry-run", transport=api)
+    assert status == 0 and "Markets to fetch: 1, in 1 events" in text
+    assert "Already in" in text and f"{tmp_path / 'k.sqlite'}: 4." in text
+    assert api.trade_requests() == set() and (tmp_path / "k.sqlite").read_bytes() == before
+
+
+def test_a_dry_run_on_a_file_without_the_tables_skips_nothing(script, tmp_path):
+    with closing(sqlite3.connect(tmp_path / "k.sqlite")) as conn:
+        conn.execute("CREATE TABLE unrelated (x INTEGER)")
+        conn.commit()
+    status, text = run_cli(script, tmp_path, "--dry-run")
+    assert status == 0 and "Markets to fetch: 5" in text and f"{tmp_path / 'k.sqlite'}: 0." in text
+
+
+def test_a_draft_calendar_is_written_from_the_markets_near_the_window(script, tmp_path):
+    path = tmp_path / "release_calendar_draft.csv"
+    api = make_api(canned_world())
+    status, text = run_cli(script, tmp_path, "--calendar-draft", str(path), rows=None,
+                           transport=api)
+    assert status == 0 and api.trade_requests() == set()
+    assert path.read_text().splitlines() == [
+        "event_ticker,release_time_utc,source_url", f"{SEP},2026-09-11T12:30:00Z,",
+        f"{OCT},2026-10-24T12:30:00Z,"]  # July and November are more than a week outside
+    assert "wrote 2 events" in text and "2 market records could not be read" in text
+    assert "The draft is not a calendar" in text
+    with pytest.raises(ValueError, match="draft"):
+        load_release_calendar(path)  # the analysis refuses it
+
+
+def test_a_draft_dry_run_writes_nothing(script, tmp_path):
+    path = tmp_path / "calendar_draft.csv"
+    status, text = run_cli(script, tmp_path, "--calendar-draft", str(path), "--dry-run", rows=None)
+    assert status == 0 and not path.exists() and "dry run" in text
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--calendar-draft", "calendar.csv"],
+    ["--start", "2026-10-31", "--end", "2026-09-01"],
+    ["--start", "2026-13-01"],
+    ["--min-trades", "0"],
+])
+def test_bad_arguments_stop_before_any_request(script, capsys, arguments):
+    api = make_api(canned_world())
+    with pytest.raises(SystemExit) as info:
+        script.main(arguments, client=make_client(api), out=no_log)
+    assert info.value.code == 2 and api.urls == [] and capsys.readouterr().err
+
+
+def test_an_api_failure_stops_with_status_one_and_what_was_stored_is_kept(script, tmp_path):
+    with closing(sqlite3.connect(":memory:")) as clean:
+        clean_api = make_api(canned_world())
+        run_ingest(clean, tmp_path, clean_api)
+    failing = make_api(canned_world(), fail_after=len(clean_api.urls) // 2)
+    status, text = run_cli(script, tmp_path, transport=failing, max_retries=0)
+    assert status == 1 and "HTTP 500" in text
+    assert "What was stored is kept; run the same command again to resume." in text
+    with closing(sqlite3.connect(tmp_path / "k.sqlite")) as conn:
+        assert 0 < len(panel.loaded_markets(conn)) < 4
+    status, text = run_cli(script, tmp_path)
+    assert status == 0
+    with closing(sqlite3.connect(tmp_path / "k.sqlite")) as conn:
+        assert_stored(conn, canned_world())
+
+
+def test_a_missing_or_draft_calendar_is_refused_before_any_request(script, tmp_path):
+    api = make_api(canned_world())
+    status, text = run_cli(script, tmp_path, transport=api, rows=None)
+    assert status == 2 and "calendar:" in text and api.urls == []
+    draft = write_calendar(tmp_path, CALENDAR_ROWS, name="release_calendar_draft.csv")
+    status, text = run_cli(script, tmp_path, "--calendar", str(draft), transport=api, rows=None)
+    assert status == 2 and "is a draft" in text and api.urls == []
+
+
+def test_a_calendar_with_a_wrong_row_is_refused_with_the_line(script, tmp_path):
+    rows = [(SEP, "2026-09-11 12:30", SOURCE_URL), CALENDAR_ROWS[1]]
+    api = make_api(canned_world())
+    status, text = run_cli(script, tmp_path, transport=api, rows=rows)
+    assert status == 2 and "line 2: release_time_utc" in text and api.urls == []
+
+
+def test_a_changed_calendar_stops_with_status_two(script, tmp_path):
+    run_cli(script, tmp_path)
+    moved = [(SEP, "2026-09-11T13:30:00Z", SOURCE_URL), CALENDAR_ROWS[1], CALENDAR_ROWS[2]]
+    api = make_api(canned_world())
+    status, text = run_cli(script, tmp_path, transport=api, rows=moved)
+    assert status == 2 and "stopped" in text and SEP in text and api.urls == []
+
+
+def test_an_empty_series_is_reported_as_empty_and_the_run_still_ends_well(script, tmp_path):
+    status, text = run_cli(script, tmp_path, transport=FakeApi({}, {}, {}))
+    assert status == 0 and "the series is reported as empty" in text
+    assert text.splitlines()[-1].startswith("done;")
+
+
+def test_a_moved_cutoff_is_a_warning(script, tmp_path):
+    moved = {**CUTOFFS, "trades_created_ts": "2026-10-21T00:00:00Z"}
+    status, text = run_cli(script, tmp_path,
+                           transport=make_api(canned_world(), cutoffs=[CUTOFFS, moved]))
+    assert status == 0 and "warning: the historical cutoff moved" in text
