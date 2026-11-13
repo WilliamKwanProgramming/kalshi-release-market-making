@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """Mutation check: does the test suite notice deliberate bugs?
 
-Copies src/, tests/, scripts/, docs/ and pyproject.toml into a temporary directory, then applies
-ONE deliberate bug ("mutant") at a time to the copy and runs pytest there. A mutant is "caught" if
-pytest does not finish green. It is caught by a failed test when at least one test fails an
-assertion; when pytest stops on an error (a collection or fixture error, no tests) or times out
-instead, the log says "CAUGHT ONLY AS AN ERROR" and the totals count those mutants separately, so
-a reader can see how many were caught by a test that looks at the changed behaviour. The working
-tree is never modified. The mutants are bugs that would silently produce plausible numbers: a
-sign, an off-by-one, a wrong tick direction, look-ahead, a wrong horizon or a unit error. They are
-one-line edits written by hand, not the output of a mutation tool. To save time a mutant runs only
-the test files that exercise the changed module (listed with it); the baseline runs the whole
-suite. Exits with status 1 if a mutant survives or the baseline fails.
+Copies src/, tests/, scripts/, docs/, constraints/, .github/ and pyproject.toml into a temporary
+directory (tests/test_lower_bounds.py reads constraints/ and .github/), then applies ONE deliberate
+bug ("mutant") at a time to the copy and runs pytest there. A mutant is "caught" if pytest does not
+finish green. It is caught by a failed test when at least one test fails an assertion; when pytest
+stops on an error (a collection or fixture error, no tests) or times out instead, the log says
+"CAUGHT ONLY AS AN ERROR" and the totals count those mutants separately, so a reader can see how
+many were caught by a test that looks at the changed behaviour. The working tree is never modified.
+The mutants are bugs that would silently produce plausible numbers: a sign, an off-by-one, a wrong
+tick direction, look-ahead, a wrong horizon or a unit error. They are one-line edits written by
+hand, not the output of a mutation tool. To save time a mutant runs only the test files that
+exercise the changed module (listed with it); the baseline runs the whole suite. Exits with status 1
+if a mutant survives or the baseline fails.
 
 Usage: python3 tests/mutation_check.py [--out results/mutation_check.txt]
 """
@@ -31,7 +32,7 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-COPY = ["src", "tests", "pyproject.toml", "docs", "scripts"]
+COPY = ["src", "tests", "pyproject.toml", "docs", "scripts", "constraints", ".github"]
 S = "src/kalshi_mm/"
 
 # (name, test files to run, [(file, text that must occur exactly once, replacement), ...])
