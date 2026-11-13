@@ -776,6 +776,360 @@ file_mutant("check_readme_numbers: the anchor of a link is not removed", RDM,
             "scripts/check_readme_numbers.py", 'target.split("#", 1)[0]', "target")
 
 
+# ---- quoting, the fill engine and the backtest study (quoting.py, backtest.py, backtest_study.py)
+mutant("quoting: bid rounded up instead of down",
+       "tests/test_quoting.py", "quoting.py",
+       "k_bid = min(max(math.floor(_snap((reservation - half) / tick)), 1), top)",
+       "k_bid = min(max(math.ceil(_snap((reservation - half) / tick)), 1), top)")
+mutant("quoting: ask rounded down instead of up",
+       "tests/test_quoting.py", "quoting.py",
+       "k_ask = min(max(math.ceil(_snap((reservation + half) / tick)), 1), top)",
+       "k_ask = min(max(math.floor(_snap((reservation + half) / tick)), 1), top)")
+mutant("quoting: inventory sign in the reservation price",
+       "tests/test_quoting.py", "quoting.py",
+       "reservation = mid - inventory * risk",
+       "reservation = mid + inventory * risk")
+mutant("quoting: release_aware without the jump variance term mm",
+       "tests/test_quoting.py", "quoting.py",
+       ("        variance += mm\n        premium = 4.0 * mm * "
+        "premiums.by_bucket[_bucket_of(tau_minutes)]"),
+       "        premium = 4.0 * mm * premiums.by_bucket[_bucket_of(tau_minutes)]")
+mutant("quoting: pooled_premium without the jump variance term mm",
+       "tests/test_quoting.py", "quoting.py",
+       "        variance += mm\n        premium = 4.0 * mm * premiums.pooled",
+       "        premium = 4.0 * mm * premiums.pooled")
+mutant("quoting: pull window edge: exactly 5 minutes is quoted",
+       "tests/test_quoting.py", "quoting.py",
+       "if policy == \"pull_only\" and tau_minutes <= params.pull_minutes:",
+       "if policy == \"pull_only\" and tau_minutes < params.pull_minutes:")
+mutant("quoting: premium bucket lookup left-closed instead of right-closed",
+       "tests/test_quoting.py", "quoting.py",
+       "return bisect_left(BUCKET_EDGES_MIN, tau_minutes) - 1",
+       "return __import__(\"bisect\").bisect_right(BUCKET_EDGES_MIN, tau_minutes) - 1")
+mutant("quoting: release_aware uses the pooled premium",
+       "tests/test_quoting.py", "quoting.py",
+       "premium = 4.0 * mm * premiums.by_bucket[_bucket_of(tau_minutes)]",
+       "premium = 4.0 * mm * premiums.pooled")
+mutant("quoting: premium without the factor 4",
+       "tests/test_quoting.py", "quoting.py",
+       "premium = 4.0 * mm * premiums.pooled",
+       "premium = mm * premiums.pooled")
+mutant("quoting: premium estimate without the m(1-m) >= 0.05 filter",
+       "tests/test_quoting.py", "quoting.py",
+       "usable = (variance >= MIN_VARIANCE_SCALE) & np.isfinite(adverse) & (bucket >= 0)",
+       "usable = np.isfinite(adverse) & (bucket >= 0)")
+mutant("quoting: pooled premium not floored at zero",
+       "tests/test_quoting.py", "quoting.py",
+       "pooled = max(floor, float(normalised.mean()))",
+       "pooled = float(normalised.mean())")
+mutant("quoting: premium switched on one event late",
+       "tests/test_quoting.py", "quoting.py",
+       "if n_events < min_events:",
+       "if n_events <= min_events:")
+mutant("quoting: volatility per grid step instead of per hour",
+       "tests/test_quoting.py", "quoting.py",
+       "variance_per_hour = (step**2).sum(axis=-1) / n_pairs / (grid_s / 3600.0)",
+       "variance_per_hour = (step**2).sum(axis=-1) / n_pairs")
+mutant("quoting: adverse selection scaled by m(1-m) instead of 4 m(1-m)",
+       "tests/test_quoting.py", "quoting.py",
+       "normalised = adverse[usable] / (4.0 * variance[usable])",
+       "normalised = adverse[usable] / variance[usable]")
+mutant("quoting: bid still quoted at exactly the position limit",
+       "tests/test_quoting.py", "quoting.py",
+       "    if inventory >= params.max_position:\n        bid = math.nan",
+       "    if inventory > params.max_position:\n        bid = math.nan")
+mutant("backtest: strict and touch comparisons swapped",
+       "tests/test_backtest.py", "backtest.py",
+       "shift = _PRICE_TOL if params.fill_rule == \"touch\" else -_PRICE_TOL",
+       "shift = -_PRICE_TOL if params.fill_rule == \"touch\" else _PRICE_TOL")
+mutant("backtest: a bid fill is booked at the print price",
+       "tests/test_backtest.py", "backtest.py",
+       "cash -= take * bid",
+       "cash -= take * prices[i]")
+mutant("backtest: an ask fill is booked at the print price",
+       "tests/test_backtest.py", "backtest.py",
+       "cash += take * ask",
+       "cash += take * prices[i]")
+mutant("backtest: taker coefficient in the maker fee",
+       "tests/test_backtest.py", "backtest.py",
+       "np.asarray(fill_prices), params.maker_fee_coeff)",
+       "np.asarray(fill_prices), 0.07)")
+mutant("backtest: fee charged on one contract per fill",
+       "tests/test_backtest.py", "backtest.py",
+       "kalshi_fee(np.asarray(fill_contracts), np.asarray(fill_prices), params.maker_fee_coeff)",
+       "kalshi_fee(np.ones(len(fill_contracts)), np.asarray(fill_prices), params.maker_fee_coeff)")
+mutant("backtest: settlement sign",
+       "tests/test_backtest.py", "backtest.py",
+       "gross = cash + inventory * y",
+       "gross = cash - inventory * y")
+mutant("backtest: the decision sees fills made after it (look-ahead)",
+       "tests/test_backtest.py", "backtest.py",
+       "            if part == 0:\n                known_inventory = inventory",
+       "            if part == 1:\n                known_inventory = inventory")
+mutant("backtest: a print exactly at the end of a live interval belongs to the next one",
+       "tests/test_backtest.py", "backtest.py",
+       "live_edge = np.searchsorted(t, decision_ts + params.latency_s, side=\"right\")",
+       "live_edge = np.searchsorted(t, decision_ts + params.latency_s, side=\"left\")")
+mutant("backtest: a fill exactly at the decision time is not known to it",
+       "tests/test_backtest.py", "backtest.py",
+       "known_edge = np.searchsorted(t, decision_ts, side=\"right\")",
+       "known_edge = np.searchsorted(t, decision_ts, side=\"left\")")
+mutant("backtest: mid proxy read one refresh late (look-ahead)",
+       "tests/test_backtest.py", "backtest.py",
+       "mid = mid_proxy_asof(t, s, p, decision_ts[:-1], stale_s=params.stale_s)",
+       "mid = mid_proxy_asof(t, s, p, decision_ts[1:], stale_s=params.stale_s)")
+mutant("backtest: minutes to the release in hours",
+       "tests/test_backtest.py", "backtest.py",
+       "tau_min=(window - refresh * steps[:-1]) / 60.0,",
+       "tau_min=(window - refresh * steps[:-1]) / 3600.0,")
+mutant("backtest: a bid fill is not limited by the quote size",
+       "tests/test_backtest.py", "backtest.py",
+       "take = min(bid_left, sizes[i])",
+       "take = sizes[i]")
+mutant("backtest: volatility floor only when undefined",
+       "tests/test_backtest.py", "backtest.py",
+       "sigmas = [sigma_floor if v != v else max(v, sigma_floor) for v in grid.vol.tolist()]",
+       "sigmas = [sigma_floor if v != v else v for v in grid.vol.tolist()]")
+mutant("backtest: prints at the release are kept",
+       "tests/test_backtest.py", "backtest.py",
+       "n = int(np.searchsorted(t, release, side=\"left\"))  # prints strictly before the release",
+       ("n = int(np.searchsorted(t, release, side=\"right\"))  # prints strictly before the "
+        "release"))
+mutant("backtest: premium and floor use one event too many (look-ahead)",
+       "tests/test_backtest.py", "backtest.py",
+       "earlier = int(n_prior[rank])",
+       "earlier = min(n_events, int(n_prior[rank]) + 1)")
+mutant("backtest: an event released at the window start is not history",
+       "tests/test_backtest.py", "backtest.py",
+       "n_prior = np.searchsorted(release, window_start, side=\"right\")",
+       "n_prior = np.searchsorted(release, window_start, side=\"left\")")
+mutant("backtest: marked P&L at a constant mark",
+       "tests/test_backtest.py", "backtest.py",
+       "held_value = inventory * grid.mark if inventory != 0.0 else 0.0",
+       "held_value = inventory * 0.5 if inventory != 0.0 else 0.0")
+mutant("backtest: the quote uses the inventory including fills after the decision (look-ahead)",
+       "tests/test_backtest.py", "backtest.py",
+       ("quote = quote_prices(policy, mids[j], known_inventory, taus[j], sigmas[j], premiums, "
+        "params)"),
+       "quote = quote_prices(policy, mids[j], inventory, taus[j], sigmas[j], premiums, params)")
+mutant("backtest: premiums from all events including later ones (look-ahead)",
+       "tests/test_backtest.py", "backtest.py",
+       ("premiums = estimate_premiums(\n                    sorted_markouts.iloc[: "
+        "rows_before[earlier]],"),
+       ("premiums = estimate_premiums(\n                    sorted_markouts.iloc[: "
+        "rows_before[n_events]],"))
+mutant("backtest: volatility floor from all events (look-ahead)",
+       "tests/test_backtest.py", "backtest.py",
+       "float(vol_sum_before[earlier] / vol_count_before[earlier])",
+       "float(vol_sum_before[n_events] / vol_count_before[n_events])")
+mutant("backtest study: sign of the primary difference",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "return (wide[PRIMARY[0]] - wide[PRIMARY[1]]).to_numpy(dtype=float)",
+       "return (wide[PRIMARY[1]] - wide[PRIMARY[0]]).to_numpy(dtype=float)")
+mutant("backtest study: burn-in events are evaluated",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "done = events[events[\"evaluated\"]]\n    order =",
+       "done = events\n    order =")
+mutant("backtest study: cents per contract in dollars",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "cents = 100.0 * float(done[\"pnl\"].sum()) / contracts",
+       "cents = float(done[\"pnl\"].sum()) / contracts")
+mutant("backtest study: 90% interval",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "LEVEL = 0.95",
+       "LEVEL = 0.90")
+mutant("backtest study: sign of the latent price impact",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       ("impact = markouts[\"side\"].to_numpy(dtype=float) * (\n        "
+        "latent[\"latent_mid_post\"].to_numpy() - latent[\"latent_mid_pre\"].to_numpy()\n    )"),
+       ("impact = markouts[\"side\"].to_numpy(dtype=float) * (\n        "
+        "latent[\"latent_mid_pre\"].to_numpy() - latent[\"latent_mid_post\"].to_numpy()\n    )"))
+mutant("backtest study: an interval ending at zero counts as excluding it",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "\"below_zero\": int((pairs[\"hi\"] < 0.0).sum()),",
+       "\"below_zero\": int((pairs[\"hi\"] <= 0.0).sum()),")
+mutant("backtest study: every dataset has the same bootstrap draws",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "weights = cluster_weights(len(wide), boot_reps, boot_rng(*key))",
+       "weights = cluster_weights(len(wide), boot_reps, boot_rng(*key[:1]))")
+mutant("backtest study: pairs are b minus a",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "d = (wide[a] - wide[b]).to_numpy(dtype=float)\n        pairs.append",
+       "d = (wide[b] - wide[a]).to_numpy(dtype=float)\n        pairs.append")
+mutant("quoting: lower edge of the mid range excluded",
+       "tests/test_quoting.py", "quoting.py",
+       "if not params.min_mid - _EPS <= mid <= params.max_mid + _EPS:",
+       "if not params.min_mid + _EPS <= mid <= params.max_mid + _EPS:")
+mutant("quoting: ln(1 + g/k) replaced by g/k",
+       "tests/test_quoting.py", "quoting.py",
+       ("half = 0.5 * (risk + (2.0 / params.gamma) * math.log1p(params.gamma / params.k)) + "
+        "premium"),
+       "half = 0.5 * (risk + (2.0 / params.gamma) * (params.gamma / params.k)) + premium")
+mutant("quoting: half-spread is the full spread",
+       "tests/test_quoting.py", "quoting.py",
+       ("half = 0.5 * (risk + (2.0 / params.gamma) * math.log1p(params.gamma / params.k)) + "
+        "premium"),
+       "half = (risk + (2.0 / params.gamma) * math.log1p(params.gamma / params.k)) + premium")
+mutant("quoting: quotes may reach price 1",
+       "tests/test_quoting.py", "quoting.py",
+       "top = round(1.0 / tick) - 1  # the tick index of 1 - tick",
+       "top = round(1.0 / tick)  # the tick index of 1 - tick")
+mutant("quoting: time to the release in minutes instead of hours",
+       "tests/test_quoting.py", "quoting.py",
+       "variance = sigma_price * sigma_price * (tau_minutes / 60.0)",
+       "variance = sigma_price * sigma_price * tau_minutes")
+mutant("quoting: logit volatility used as price volatility",
+       "tests/test_quoting.py", "quoting.py",
+       "sigma_price = sigma_hat * mm",
+       "sigma_price = sigma_hat")
+mutant("quoting: ask still quoted at exactly minus the position limit",
+       "tests/test_quoting.py", "quoting.py",
+       "if inventory <= -params.max_position:",
+       "if inventory < -params.max_position:")
+mutant("quoting: a pair with one undefined end is used",
+       "tests/test_quoting.py", "quoting.py",
+       "pair = valid[..., 1:] & valid[..., :-1]",
+       "pair = valid[..., 1:] | valid[..., :-1]")
+mutant("quoting: five valid grid points are enough for a volatility",
+       "tests/test_quoting.py", "quoting.py",
+       "MIN_VOL_POINTS = 6",
+       "MIN_VOL_POINTS = 5")
+mutant("quoting: bid and ask one tick apart at the top edge",
+       "tests/test_quoting.py", "quoting.py",
+       "    if k_ask - k_bid < 1:  # clipping made them equal\n        if k_bid + 1 <= top:",
+       "    if k_ask - k_bid < 1:  # clipping made them equal\n        if k_bid + 1 < top:")
+mutant("backtest: the first evaluated event is one too late",
+       "tests/test_backtest.py", "backtest.py",
+       "\"evaluated\": rank >= burn,",
+       "\"evaluated\": rank > burn,")
+mutant("backtest: live share over one interval too few",
+       "tests/test_backtest.py", "backtest.py",
+       "quotes_live_share=live / grid.n_intervals,",
+       "quotes_live_share=live / (grid.n_intervals - 1),")
+mutant("backtest: no update of the known inventory when nothing is quoted",
+       "tests/test_backtest.py", "backtest.py",
+       "        if quote is None:\n            known_inventory = inventory\n            continue",
+       "        if quote is None:\n            continue")
+mutant("backtest: no update of the known inventory in an interval without prints",
+       "tests/test_backtest.py", "backtest.py",
+       "        if first == stop:\n            known_inventory = inventory\n            continue",
+       "        if first == stop:\n            continue")
+mutant("backtest: bid price tolerance has the wrong sign",
+       "tests/test_backtest.py", "backtest.py",
+       "bid_below = bid + shift if bid == bid else -math.inf",
+       "bid_below = bid - shift if bid == bid else -math.inf")
+mutant("backtest: never counts live intervals",
+       "tests/test_backtest.py", "backtest.py",
+       "live += 1\n        first, split, stop",
+       "first, split, stop")
+mutant("backtest study: B8 runs keep the window of the main grid",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "params = replace(config.world, pi1=config.planted_pi1, window_hours=hours)",
+       "params = replace(config.world, pi1=config.planted_pi1)")
+mutant("backtest study: B8 runs use the null world",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "params = replace(config.world, pi1=config.planted_pi1, window_hours=hours)",
+       "params = replace(config.world, pi1=0.0, window_hours=hours)")
+mutant("backtest study: B8 bootstrap draws do not depend on the dataset",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "boot_rng(KIND_WINDOW, i, seed))",
+       "boot_rng(KIND_WINDOW, i))")
+mutant("backtest study: B8 bootstrap draws share the key of the main grid",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "boot_rng(KIND_WINDOW, i, seed))",
+       "boot_rng(KIND_MAIN, i, seed))")
+mutant("backtest study: sign of the primary difference in the B8 runs",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "d = primary_differences(events)\n            weights = cluster_weights(d.size,",
+       "d = -primary_differences(events)\n            weights = cluster_weights(d.size,")
+mutant("backtest study: first and last bucket premiums swapped",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "values = (end[\"pooled\"], end[BUCKET_LABELS[0]], end[BUCKET_LABELS[-1]])",
+       "values = (end[\"pooled\"], end[BUCKET_LABELS[-1]], end[BUCKET_LABELS[0]])")
+mutant("backtest study: premium after the burn-in instead of at the end",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "end = check.set_index(\"bucket\")[\"estimate_end\"]",
+       "end = check.set_index(\"bucket\")[\"estimate_burn_in\"]")
+mutant("backtest study: the default-window row is taken from the null world",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       ("(pairs[\"sweep\"] == \"main\") & (pairs[\"world\"] == PLANTED_WORLD)\n        & "
+        "(pairs[\"a\"]"),
+       ("(pairs[\"sweep\"] == \"main\") & (pairs[\"world\"] == NULL_WORLD)\n        & "
+        "(pairs[\"a\"]"))
+mutant("backtest study: the default-window row includes the sweeps",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       ("(pairs[\"sweep\"] == \"main\") & (pairs[\"world\"] == PLANTED_WORLD)\n        & "
+        "(pairs[\"a\"]"),
+       "(pairs[\"world\"] == PLANTED_WORLD)\n        & (pairs[\"a\"]")
+mutant("backtest study: the default window is always 12 hours",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "\"window_hours\": config.world.window_hours, \"seed\": int(r.seed),",
+       "\"window_hours\": 12.0, \"seed\": int(r.seed),")
+mutant("backtest study: windows in input order",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "for hours, part in windows.groupby(\"window_hours\", sort=True):",
+       "for hours, part in windows.groupby(\"window_hours\", sort=False):")
+mutant("backtest study: median of the premiums instead of the mean",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "means = {k: float(part[k].mean()) for k in WINDOW_PREMIUMS}",
+       "means = {k: float(part[k].median()) for k in WINDOW_PREMIUMS}")
+mutant("backtest study: premium in USD instead of cents in the B8 table",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "_num(100.0 * s[\"premium_pooled\"]),\n            _num(100.0 * s[\"premium_near\"])",
+       "_num(s[\"premium_pooled\"]),\n            _num(100.0 * s[\"premium_near\"])")
+mutant("backtest study: B8 table: bucket columns swapped",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "_num(100.0 * s[\"premium_near\"]), _num(100.0 * s[\"premium_far\"]),",
+       "_num(100.0 * s[\"premium_far\"]), _num(100.0 * s[\"premium_near\"]),")
+mutant("backtest study: B8 table: the contains-zero count ignores the intervals above zero",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       ("str(s[\"below_zero\"]), str(s[\"above_zero\"]), str(n - s[\"below_zero\"] - "
+        "s[\"above_zero\"]),\n            _num(s[\"half_width\"]), _num(100.0"),
+       ("str(s[\"below_zero\"]), str(s[\"above_zero\"]), str(n - s[\"below_zero\"]),\n          "
+        "  _num(s[\"half_width\"]), _num(100.0"))
+mutant("backtest study: two premiums joined without and",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "(\" and \" if len(premiums) > 1 else \"\")",
+       "(\" and \" if len(premiums) > 2 else \"\")")
+mutant("backtest study: an empty list of extra windows is accepted",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "if not config.extra_windows:",
+       "if config.extra_windows:")
+mutant("backtest study: an extra window equal to the world's is accepted",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "if config.world.window_hours in config.extra_windows:",
+       "if config.world.window_hours not in config.extra_windows:")
+mutant("backtest study: B8 runs all four policies",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "world, rows = run_dataset(params, seed, config.quote, PRIMARY)",
+       "world, rows = run_dataset(params, seed, config.quote)")
+mutant("backtest study: event count off by one in the B8 records",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "\"window_hours\": hours, \"seed\": seed, \"n_events\": int(d.size),",
+       "\"window_hours\": hours, \"seed\": seed, \"n_events\": int(d.size) + 1,")
+mutant("backtest study: window index off by one in the bootstrap key",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "boot_rng(KIND_WINDOW, i, seed))",
+       "boot_rng(KIND_WINDOW, i + 1, seed))")
+mutant("backtest study: interval ends swapped in the default-window row",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "\"lo\": r.lo, \"hi\": r.hi,",
+       "\"lo\": r.hi, \"hi\": r.lo,")
+mutant("backtest study: wording of the sign",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "{_more_or_less(mean)} than \"",
+       "{_more_or_less(-mean)} than \"")
+mutant("backtest study: manifest names the wrong bootstrap key",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       "default_rng([{SEED}, {KIND_WINDOW}, window index, seed])",
+       "default_rng([{SEED}, {KIND_MAIN}, window index, seed])")
+mutant("backtest study: B8 is not written",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       ("table_events_needed(summary, config), table_premium_check(check),\n        "
+        "table_windows(summary, config),"),
+       "table_events_needed(summary, config), table_premium_check(check),")
+
+
 def run_pytest(work: Path, targets: list[str], timeout: float):
     env = dict(os.environ, OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1")
     env.pop("PYTHONPATH", None)

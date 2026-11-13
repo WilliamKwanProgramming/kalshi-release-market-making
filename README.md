@@ -340,8 +340,11 @@ Details and every parameter: [docs/model.md](docs/model.md).
   of the trade rate, the level of the price and the staleness of the mid proxy change it without a
   change of the informed share (tables M1, M3, M4); the scaled version removes the price level only.
 * **The backtest does not trade against anyone.** A quote fills when a print goes strictly through
-  it, at the quote; there is no queue, no market impact and no reaction of other makers. Profit
-  figures are therefore about the rule, not about what an account would earn.
+  it, at the quote, so it fills only after the price has moved through the quote; the touch rule,
+  which fills at equality, is the optimistic bound (table B5 in `results/backtest/tables.md`).
+  There is no queue, no market impact and no reaction of other makers, and the quote parameters
+  were fixed before the study and not tuned. Profit figures are therefore about the rule, not
+  about what an account would earn.
 * **The quoting comparison flips with the trading window.** The premium by bucket loses to the
   pooled premium with 12 hours of trading before each release and wins with 30 (tables B1, B8, the
   latter exploratory), and every policy loses money in the backtest (table B2). The study does not
