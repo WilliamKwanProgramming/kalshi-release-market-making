@@ -2,13 +2,13 @@
 
 [![CI](https://github.com/WilliamKwanProgramming/kalshi-release-market-making/actions/workflows/ci.yml/badge.svg)](https://github.com/WilliamKwanProgramming/kalshi-release-market-making/actions/workflows/ci.yml)
 
-A Python library that measures adverse selection in Kalshi's release-day contracts (CPI, payrolls, GDP, unemployment, FOMC) from the public trade tape, quotes them with an Avellaneda-Stoikov rule whose premium depends on the minutes to the release, and backtests that quoting against the same tape. It is validated on a synthetic world with known truth; **no Kalshi data have been analysed in this repository**, and the real-data run is specified in [docs/protocol.md](docs/protocol.md) and has not been done.
+A Python library that measures adverse selection in Kalshi's release-day contracts (CPI, payrolls, GDP, unemployment, FOMC) from the public trade tape, quotes them with an Avellaneda-Stoikov rule whose premium depends on the minutes to the release, and backtests that quoting against the same tape. It is checked against a synthetic world with known truth; **no Kalshi data have been analysed in this repository**, and the real-data run is specified in [docs/protocol.md](docs/protocol.md) and has not been done.
 
 ## Status
 
 | Feature | Implemented | Tested | Run on synthetic data with known truth | Run on real data |
 |---|---|---|---|---|
-| Kalshi public API client, fetch script, SQLite store, protocol filters | yes | yes (canned responses shaped like the documentation) | n/a | not run (the client has never run against the live service) |
+| Kalshi public API client, fetch script, SQLite store, protocol filters | yes | yes (canned responses shaped like the documentation) | partly (the SQLite store, in the rehearsal; not the client, the fetch script or the filters) | not run (the client has never run against the live service) |
 | Synthetic world: logit diffusion, Glosten-Milgrom order flow, planted release effect | yes | yes (calibration and closed forms) | yes | n/a |
 | Mid proxy from prints, markouts, release effect D with cluster bootstrap | yes | yes (hand tape, plain-loop check, look-ahead guards) | yes (tables M) | not run |
 | Avellaneda-Stoikov quoting, four premium policies, trade-through backtest with Kalshi fees | yes | yes (closed forms, look-ahead guards) | yes (tables B) | not run |
