@@ -47,7 +47,7 @@ Does not show: an informed-share profile of any kind; the informed share is cons
 
 ### M3. Population release effect by world and estimand (synthetic data)
 
-Reading: D = near minus quiet in cents per contract over 3000 events per world, with its 95% cluster-bootstrap interval; raw D is positive with the surge alone (spec_null, +0.41 cents) and negative with neither (flat_null, -0.16 cents), so D is a per-contract cost measured on the tape, not an estimate of the informed share; scaled D near (5, 30] is the cleaner read: in flat_null it is +0.03 cents, with an interval that contains zero.
+Reading: D = near minus quiet in cents per contract over 3000 events per world, with its 95% cluster-bootstrap interval; raw D is positive with the surge alone (spec_null, +0.41 cents) and negative with neither (flat_null, -0.16 cents), so D is a per-contract cost measured on the tape, not an estimate of the informed share; scaled D near (5, 30] removes the price-level artefact (flat_null +0.03 cents, with an interval that contains zero) but not the surge (spec_null +1.61 cents, interval +1.56 to +1.66).
 
 | world | estimand | D | 95% interval | near mean | quiet mean |
 |---|---|---|---|---|---|
@@ -143,7 +143,7 @@ Does not show: power for an effect of another size, series mix or number of mark
 
 ### M8. Number of events for 80% power in the planted world (synthetic data)
 
-Reading: smallest size tried with a rejection rate above 80% in the planted world, each rate from 100 replications (Monte Carlo standard error up to 5.0 points); it applies to an effect like the planted one. The design asked for 200 replications per world; 100 were run to stay within the 6-minute budget.
+Reading: smallest size tried with a rejection rate above 80% in the planted world (rejection: one-sided cluster-bootstrap p below 0.05, with no Holm adjustment, so this is not the power of the three-test family of the protocol), each rate from 100 replications (Monte Carlo standard error up to 5.0 points); it applies to an effect like the planted one. The design asked for 200 replications per world; 100 were run to stay within the 6-minute budget.
 
 | estimand | smallest n with power above 80% | power at that n | power at the next smaller n |
 |---|---|---|---|
