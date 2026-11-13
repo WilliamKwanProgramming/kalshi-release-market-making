@@ -51,6 +51,7 @@ def make_events(pnl, evaluated=None):
             "inventory_end": 0.0,
             "marked_pnl": values,
             "quotes_live_share": 0.5,
+            "mean_spread": 0.05,
             "evaluated": evaluated,
             "release_ts": 1000.0 + 100.0 * np.arange(n),
         })
@@ -132,6 +133,7 @@ def test_event_table_sums_the_markets_of_an_event_and_averages_the_live_share():
         "pnl": [1.0, 2.0, 4.0], "gross": [1.5, 2.5, 4.5], "fees": [0.5, 0.5, 0.5],
         "fills": [3, 4, 5], "contracts": [30.0, 40.0, 50.0], "inventory_end": [5.0, -2.0, 1.0],
         "marked_pnl": [0.0, 1.0, 2.0], "quotes_live_share": [0.5, 1.0, 0.25],
+        "mean_spread": [0.06, 0.04, float("nan")],
         "evaluated": [True, True, False], "release_ts": [10.0, 10.0, 20.0], "series": "S",
     })
     out = bs.event_table(rows).set_index("event")
@@ -140,6 +142,13 @@ def test_event_table_sums_the_markets_of_an_event_and_averages_the_live_share():
     assert out.loc["A", "quotes_live_share"] == 0.75
     assert out.loc["B", "pnl"] == 4.0 and not out.loc["B", "evaluated"]
     assert out.loc["A", "release_ts"] == 10.0
+    # the mean quoted spread is the mean of the markets' spreads; a market without one is left out
+    assert out.loc["A", "mean_spread"] == pytest.approx(0.05)
+    assert math.isnan(out.loc["B", "mean_spread"])
+    skipped = bs.event_table(rows.assign(mean_spread=[float("nan"), 0.04, 0.02]))
+    skipped = skipped.set_index("event")
+    assert skipped.loc["A", "mean_spread"] == pytest.approx(0.04)
+    assert skipped.loc["B", "mean_spread"] == pytest.approx(0.02)
 
 
 def test_evaluated_pnl_is_in_release_order_without_the_burn_in():
@@ -168,11 +177,16 @@ def test_policy_summary_by_hand():
     events.loc[events["policy"] == "always_on", "contracts"] = [1.0, 50.0, 150.0]
     events.loc[events["policy"] == "always_on", "fills"] = [1, 4, 8]
     events.loc[events["policy"] == "always_on", "quotes_live_share"] = [1.0, 0.5, 0.25]
+    events.loc[events["policy"] == "always_on", "mean_spread"] = [0.90, 0.04, 0.08]
     s = bs.policy_summary(events, "always_on")
     assert s["n_events"] == 2 and s["pnl"] == -1.0 and s["fees"] == 1.0 and s["gross"] == 0.0
     assert s["fills"] == 6.0 and s["contracts"] == 100.0 and s["marked_pnl"] == -1.0
     assert s["cents_per_contract"] == pytest.approx(100.0 * (2.0 - 4.0) / 200.0)  # -1 cent
     assert s["live_share"] == 0.375
+    assert s["spread"] == pytest.approx(0.06)  # the burn-in event (0.90) is left out
+    events.loc[(events["policy"] == "always_on") & (events["event"] == "E001"),
+               "mean_spread"] = float("nan")  # an event without a two-sided quote is skipped
+    assert bs.policy_summary(events, "always_on")["spread"] == pytest.approx(0.08)
     none = events.assign(contracts=0.0)
     assert math.isnan(bs.policy_summary(none, "always_on")["cents_per_contract"])
 
@@ -307,7 +321,8 @@ def test_the_primary_table_says_what_flat_matched_is_and_what_it_does_not_show()
                        "(synthetic data)")
     assert ("`flat_matched` quotes one flat premium equal to the average of the bucket premiums "
             "over the quoting window, so the difference is the effect of when a premium is "
-            "applied and not of its average size.") in reading
+            "applied and not of its average size (both premiums are per unit of 4m(1 - m); the "
+            "quoted spreads in USD also depend on the price, see B2).") in reading
     assert "pooled" not in block  # the first primary pair is B3's and B8's
     assert not_shown.startswith(
         "Does not show: whether the planted informed share is what makes the bucket premiums "
@@ -413,12 +428,14 @@ def test_the_policies_file_equals_a_recomputation_from_the_per_event_file(small)
         assert row.cents_per_contract == pytest.approx(
             100.0 * part["pnl"].sum() / part["contracts"].sum(), rel=1e-8)
         assert row.live_share == pytest.approx(part["quotes_live_share"].mean(), rel=1e-8)
+        assert row.spread == pytest.approx(part["mean_spread"].mean(), rel=1e-8)  # NaN skipped
+    assert (per_event["mean_spread"].dropna() > 0.0).all()  # a spread is ask minus bid
 
 
 def test_the_sweep_cells_agree_with_the_main_grid_and_with_each_other(small):
     policies = read(small, "policies.csv")
     columns = ["n_events", "pnl", "gross", "fees", "fills", "contracts", "marked_pnl",
-               "live_share"]
+               "live_share", "spread"]
     cells = policies[policies["sweep"] == "pi1_fee"]
     assert len(cells) == 2 * 2 * 5  # two planted shares, two fees, five policies
     for pi1, world in ((0.0, NULL), (0.2, PLANTED)):
@@ -746,9 +763,12 @@ def test_the_sweep_tables_have_one_column_per_policy_then_the_primary_difference
 
 def test_the_reading_of_the_policy_table_counts_the_losing_cells():
     config = bs.StudyConfig()
+    # USD per contract; the planted world is twice as wide
+    spread = {"always_on": 0.040, "pull_only": 0.041, "pooled_premium": 0.056,
+              "flat_matched": 0.050, "release_aware": 0.048}
     values = {f"{w}:{p}": {"pnl": v, "pnl_mc_se": 0.1, "fees": 1.0, "fills": 10.0,
                            "contracts": 50.0, "cents_per_contract": 0.5, "marked_pnl": v,
-                           "live_share": 0.9}
+                           "live_share": 0.9, "spread": spread[p] * (2 if w == PLANTED else 1)}
               for w, vs in ((NULL, [-3.0, -2.0, 1.0, 2.0, 4.0]),
                             (PLANTED, [-8.0, -1.0, -2.0, 0.5, -0.5]))
               for p, v in zip(POLICIES, vs, strict=True)}
@@ -759,6 +779,16 @@ def test_the_reading_of_the_policy_table_counts_the_losing_cells():
     assert "the lowest `always_on` in the planted world (-8.00 USD)" in block
     rows = [line for line in block.splitlines() if line.startswith(("| null", "| planted"))]
     assert [row.split(" | ")[1] for row in rows] == [f"`{p}`" for p in POLICIES] * 2
+    # the last column is the mean quoted spread in cents; the reading gives it for the three
+    # policies that quote a premium, in each world
+    header = block.splitlines()[4]
+    assert header.endswith("| Share of intervals with a quote | Mean quoted spread, cents |")
+    assert [row.split(" | ")[-1].rstrip(" |") for row in rows] == [
+        "4.00", "4.10", "5.60", "5.00", "4.80", "8.00", "8.20", "11.20", "10.00", "9.60"]
+    assert ("In the null world the mean quoted spread, in cents, is `release_aware` 4.80, "
+            "`flat_matched` 5.00, `pooled_premium` 5.60.") in block
+    assert ("In the planted world the mean quoted spread, in cents, is `release_aware` 9.60, "
+            "`flat_matched` 10.00, `pooled_premium` 11.20.") in block
 
 
 def fake_pairs(means):

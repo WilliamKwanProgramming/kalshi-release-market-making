@@ -136,13 +136,15 @@ All were made before any real-data result existed.
   planted world 1.65 against 2.80 cents per unit of $4m(1-m)$); every policy loses money per
   contract there, so the policy that quotes wider loses less, and the sign of the difference
   reversed when the pooled premium was scaled or the history lengthened (tables B8 and B9 of the
-  README). `flat_matched` is the flat premium with the same average size as the bucket premiums
-  over the quoting window, estimated from earlier events only. Its definition was written down
-  before the results for it were generated and was not tuned. `pooled_premium` stays as a policy
-  and its pair is reported. The hypothesis, the test (cluster bootstrap over releases, one-sided)
-  and the Holm family did not change. A "supported" P2 says that the premium by bucket earns more
-  than a flat premium of the same average size in this backtest; it does not say that the premium
-  measures informed trading.
+  README). `flat_matched` is the flat premium with the same average size (per unit of
+  $4m(1-m)$) as the bucket premiums over the quoting window, estimated from earlier events only.
+  Its definition was written down before the results for it were generated and was not tuned.
+  `pooled_premium` stays as a policy and its pair is reported. The hypothesis, the test (cluster
+  bootstrap over releases, one-sided) and the Holm family did not change. A "supported" P2 says
+  that the premium by bucket earns more than a flat premium of the same average size in this
+  backtest; it does not say that the premium measures informed trading. The backtest also reports
+  the mean quoted spread of every policy (table B2 of the README), because the match is per unit
+  of $4m(1-m)$ and the premium in USD also depends on the price.
 - 2026-11-13, same review: the exploratory label counts the releases that enter each test (for P2
   the releases after the burn-in) and not the releases kept; and the P3 fit leaves out the
   releases that took place between the price time and the release being scored (the first version

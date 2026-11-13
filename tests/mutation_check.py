@@ -1085,6 +1085,42 @@ mutant("backtest: live share over one interval too few",
        "tests/test_backtest.py", "backtest.py",
        "quotes_live_share=live / grid.n_intervals,",
        "quotes_live_share=live / (grid.n_intervals - 1),")
+mutant("backtest: mean spread with bid minus ask",
+       "tests/test_backtest.py", "backtest.py",
+       "            spread_sum += ask - bid",
+       "            spread_sum += bid - ask")
+mutant("backtest: mean spread counts each refresh twice",
+       "tests/test_backtest.py", "backtest.py",
+       "            spread_n += 1",
+       "            spread_n += 2")
+mutant("backtest: mean spread over the refreshes with one side as well",
+       "tests/test_backtest.py", "backtest.py",
+       "        if bid == bid and ask == ask:  # both sides are quoted",
+       "        if bid == bid or ask == ask:  # both sides are quoted")
+mutant("backtest: mean spread is zero when nothing is quoted",
+       "tests/test_backtest.py", "backtest.py",
+       "mean_spread=spread_sum / spread_n if spread_n else math.nan,",
+       "mean_spread=spread_sum / spread_n if spread_n else 0.0,")
+mutant("study: mean spread of an event is the sum over its markets",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       'mean_spread=("mean_spread", "mean"),',
+       'mean_spread=("mean_spread", "sum"),')
+mutant("study: mean spread of a policy is the largest over its events",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       '"spread": float(done["mean_spread"].mean()),',
+       '"spread": float(done["mean_spread"].max()),')
+mutant("study: B2 gives the mean spread in USD under a heading of cents",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       '_num(100.0 * s["spread"]),',
+       '_num(s["spread"]),')
+mutant("study: per_event.csv without the mean spread",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       '"quotes_live_share", "mean_spread", "evaluated"]',
+       '"quotes_live_share", "evaluated"]')
+mutant("study: the reading of B2 names the policies in another order",
+       "tests/test_backtest_study.py", "experiments/backtest_study.py",
+       'for policy in ("release_aware", "flat_matched", "pooled_premium")\n        }',
+       'for policy in ("flat_matched", "release_aware", "pooled_premium")\n        }')
 mutant("backtest: no update of the known inventory when nothing is quoted",
        "tests/test_backtest.py", "backtest.py",
        "        if quote is None:\n            known_inventory = inventory\n            continue",

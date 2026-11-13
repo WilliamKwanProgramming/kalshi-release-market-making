@@ -352,8 +352,9 @@ def p2_pricing(ds: Dataset, settings: Settings = DEFAULT) -> dict[str, Any]:
     The walk-forward backtest (docs/model.md sections 6 and 7) runs the five policies. The tested
     quantity is the net settled P&L per release (sum over its markets) of ``release_aware`` minus
     ``flat_matched``, paired by release, over the releases after the burn-in. ``flat_matched``
-    quotes the average of the bucket premiums over the quoting window, so the two policies differ
-    in when a premium is applied and not in how large it is on average. Reported, not tested: every
+    quotes the average of the bucket premiums over the quoting window (per unit of 4 m (1 - m)),
+    so the two policies differ in when a premium is applied and not in how large it is on
+    average. Reported, not tested: every
     other pair of policies (among them ``release_aware`` minus ``pooled_premium``, the comparison
     of the first version of the protocol, whose sign follows the level of the pooled premium), each
     policy's totals, the primary difference by series and in the two halves of the sample split at

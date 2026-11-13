@@ -184,9 +184,10 @@ def matched_premium(by_bucket: Sequence[float], minutes: ArrayLike) -> float:
     ``minutes`` the (positive) minutes to the release of each decision of the quoting window, for
     example :func:`decision_minutes`. This is the premium that ``release_aware`` quotes, averaged
     over the clock time of the window with every refresh counted once (docs/model.md section 6). A
-    flat premium of this size has the same average over the window as the bucket premiums, so
-    quoting it (``flat_matched``) isolates the effect of when a premium is applied from the effect
-    of how large it is on average.
+    flat premium of this size has the same average over the window as the bucket premiums (per
+    unit of ``4 m (1 - m)``, the quoted premium in USD also depends on the price), so quoting it
+    (``flat_matched``) isolates the effect of when a premium is applied from the effect of how
+    large it is on average.
     """
     taus = np.asarray(minutes, dtype=np.float64)
     _require(taus.ndim == 1 and taus.size > 0 and bool(np.all(taus > 0.0)),

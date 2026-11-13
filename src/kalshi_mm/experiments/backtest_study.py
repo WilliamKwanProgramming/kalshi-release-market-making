@@ -166,7 +166,8 @@ def run_dataset(
 
 def event_table(rows: pd.DataFrame) -> pd.DataFrame:
     """One row per event and policy: the sums over the event's markets (the share of live
-    intervals is their mean)."""
+    intervals and the mean quoted spread are their means; a market without a quote on both sides
+    has no spread and is left out of that mean)."""
     return (
         rows.groupby(["event", "policy"], sort=False)
         .agg(
@@ -178,6 +179,7 @@ def event_table(rows: pd.DataFrame) -> pd.DataFrame:
             inventory_end=("inventory_end", "sum"),
             marked_pnl=("marked_pnl", "sum"),
             quotes_live_share=("quotes_live_share", "mean"),
+            mean_spread=("mean_spread", "mean"),
             evaluated=("evaluated", "first"),
             release_ts=("release_ts", "first"),
         )
@@ -215,7 +217,8 @@ def mean_difference(d: NDArray[np.float64], weights: NDArray[np.int64]) -> dict[
 
 def policy_summary(events: pd.DataFrame, policy: str) -> dict[str, float]:
     """Means per evaluated event of one policy; ``cents_per_contract`` is the net P&L of all
-    evaluated events over all contracts filled, in cents."""
+    evaluated events over all contracts filled, in cents, and ``spread`` the mean quoted spread
+    (ask minus bid, USD per contract) of the events that had a quote on both sides."""
     done = events[(events["policy"] == policy) & events["evaluated"]]
     contracts = float(done["contracts"].sum())
     cents = 100.0 * float(done["pnl"].sum()) / contracts if contracts > 0.0 else math.nan
@@ -229,6 +232,7 @@ def policy_summary(events: pd.DataFrame, policy: str) -> dict[str, float]:
         "cents_per_contract": cents,
         "marked_pnl": float(done["marked_pnl"].mean()),
         "live_share": float(done["quotes_live_share"].mean()),
+        "spread": float(done["mean_spread"].mean()),
     }
 
 
@@ -604,7 +608,7 @@ def sample_size(per_event: pd.DataFrame) -> dict[str, float]:
 def _policy_means(policies: pd.DataFrame, world: str) -> dict[str, dict[str, float]]:
     """Mean over the datasets of a world of every policy summary column, by policy."""
     columns = ("pnl", "gross", "fees", "fills", "contracts", "cents_per_contract", "marked_pnl",
-               "live_share")
+               "live_share", "spread")
     out = {}
     main = policies[(policies["sweep"] == "main") & (policies["world"] == world)]
     for policy in POLICIES:
@@ -775,13 +779,30 @@ def table_primary(summary: dict[str, Any], config: StudyConfig) -> str:
         "B1", f"{_pair(*PRIMARY)}, net P&L per event",
         " ".join(sentences) + f" `{PRIMARY[1]}` quotes one flat premium equal to the average of "
         f"the bucket premiums over the quoting window, so the difference is the effect of when a "
-        f"premium is applied and not of its average size. Intervals are percentile intervals of a "
-        f"cluster bootstrap over events with {config.boot_reps:,} replications.", table,
+        f"premium is applied and not of its average size (both premiums are per unit of "
+        f"4m(1 - m); the quoted spreads in USD also depend on the price, see B2). Intervals are "
+        f"percentile intervals of a cluster bootstrap over events with {config.boot_reps:,} "
+        f"replications.", table,
         "whether the planted informed share is what makes the bucket premiums useful: the null "
         "world's buckets also differ, because of the trade-rate surge and the price level; and "
         "whether either policy earns or loses money on real Kalshi markets: the tape, the fill "
         "rule and the quote parameters are assumptions.",
     )
+
+
+def _spread_sentences(summary: dict[str, Any], config: StudyConfig) -> str:
+    """The mean quoted spread, in cents, of the three premium policies in each world."""
+    sentences = []
+    for world, _ in config.worlds():
+        spreads = {
+            policy: 100.0 * summary["policies"][f"{world}:{policy}"]["spread"]
+            for policy in ("release_aware", "flat_matched", "pooled_premium")
+        }
+        parts = ", ".join(f"`{policy}` {_num(value)}" for policy, value in spreads.items())
+        sentences.append(
+            f"In the {_label(world)} world the mean quoted spread, in cents, is {parts}."
+        )
+    return " ".join(sentences)
 
 
 def table_policies(summary: dict[str, Any], config: StudyConfig) -> str:
@@ -795,6 +816,7 @@ def table_policies(summary: dict[str, Any], config: StudyConfig) -> str:
                 _label(world), f"`{policy}`", f"{_num(s['pnl'])} ({_num(s['pnl_mc_se'])})",
                 _num(s["fees"]), _num(s["fills"], 1), _num(s["contracts"], 1),
                 _num(s["cents_per_contract"]), _num(s["marked_pnl"]), _num(s["live_share"], 3),
+                _num(100.0 * s["spread"]),
             ])
     losing = sum(1 for value, _, _ in cells if value < 0.0)
     best, worst = max(cells), min(cells)
@@ -802,17 +824,20 @@ def table_policies(summary: dict[str, Any], config: StudyConfig) -> str:
         f"Net P&L per event is negative in {losing} of {len(cells)} world and policy cells; the "
         f"highest is `{best[2]}` in the {_label(best[1])} world ({_num(best[0], signed=True)} "
         f"USD) and the lowest `{worst[2]}` in the {_label(worst[1])} world "
-        f"({_num(worst[0], signed=True)} USD)."
+        f"({_num(worst[0], signed=True)} USD). " + _spread_sentences(summary, config)
     )
     table = _markdown(
         ["World", "Policy", "Net P&L per event, USD (MC SE over datasets)", "Fees per event, USD",
          "Fills per event", "Contracts per event", "Net cents per contract",
-         "Marked P&L per event, USD", "Share of intervals with a quote"],
+         "Marked P&L per event, USD", "Share of intervals with a quote",
+         "Mean quoted spread, cents"],
         body,
     )
     return _block(
         "B2", "The five policies, means over the datasets of each world", reading, table,
-        "which part of a loss is adverse selection: the table has no fill-level decomposition.",
+        "which part of a loss is adverse selection: the table has no fill-level decomposition; "
+        "the spread is that of the quotes posted, ask minus bid at the refreshes with both sides "
+        "quoted, not the width at which fills happened.",
     )
 
 
@@ -1183,7 +1208,7 @@ def run_study(config: StudyConfig, out: Path, manifest: Manifest) -> dict[str, A
 
     csv = {"index": False, "float_format": "%.10g"}
     columns = ["world", "seed", "event", "policy", "pnl", "gross", "fees", "fills", "contracts",
-               "inventory_end", "marked_pnl", "quotes_live_share", "evaluated"]
+               "inventory_end", "marked_pnl", "quotes_live_share", "mean_spread", "evaluated"]
     per_event[columns].to_csv(out / "per_event.csv", **csv)
     policies.to_csv(out / "policies.csv", **csv)
     pairs.to_csv(out / "pairs.csv", **csv)

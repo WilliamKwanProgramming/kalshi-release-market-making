@@ -167,10 +167,13 @@ rule was written down before the results for it were generated and has no parame
 tuned; the multiplier of the sweep in table B9 is not part of the policy.
 
 The primary comparison is `release_aware` against `flat_matched`: the same variance and, by
-construction, the same premium averaged over the refreshes of the quoting window, so they differ
-in when the premium is applied and not in how large it is on average. A positive difference says
-that, at the same average width, the premium by minutes to the release earns more than a flat
-one. It does not say that the premium measures informed trading: the buckets of the null world
+construction, the same premium per unit of $4m(1-m)$ averaged over the refreshes of the quoting
+window, so they differ in when the premium is applied and not in how large it is on average. The
+premium in USD is that number times $4m(1-m)$, so the quoted spreads in USD are not equal by
+construction; table B2 of the README gives the mean quoted spread of each policy. A positive
+difference says that, at the same average premium per unit of $4m(1-m)$, the premium by minutes
+to the release earns more than a flat one. It does not say that the premium measures informed
+trading: the buckets of the null world
 differ too (the trade surge and the price level), and every policy loses money in the synthetic
 worlds, where a wider quote loses less. The other pairs, among them `release_aware` against
 `pooled_premium`, are secondary.
