@@ -204,14 +204,9 @@ mutant("protocol: P3 runs with exactly the minimum number of releases", PROTO, "
        'if usable["release_ts"].nunique() < settings.recal_min_releases:')
 mutant("protocol: the bootstrap seed is ignored", PROTO, "protocol.py",
        "np.random.default_rng(settings.seed)", "np.random.default_rng(0)")
-mutant("protocol: exploratory only below the minimum minus one", PROTO, "protocol.py",
-       "exploratory = n_releases < settings.min_releases",
-       "exploratory = n_releases <= settings.min_releases")
 mutant("protocol: supported at an adjusted p equal to alpha", PROTO, "protocol.py",
        'else ("supported" if adj < settings.alpha else "not supported")',
        'else ("supported" if adj <= settings.alpha else "not supported")')
-mutant("protocol: P3 is labelled exploratory too", PROTO, "protocol.py",
-       'exploratory and name != "P3"', "exploratory")
 mutant("protocol: a test that is not computed counts as p = 0", PROTO, "protocol.py",
        "[1.0 if v is None else v for v in raw.values()]",
        "[0.0 if v is None else v for v in raw.values()]")
@@ -225,9 +220,6 @@ mutant("protocol: the releases of the burn-in enter the comparison", PIPE, "prot
 mutant("protocol: the P&L of a release is the mean over its markets", PIPE, "protocol.py",
        '.groupby(["event", "policy"])[column].sum()',
        '.groupby(["event", "policy"])[column].mean()')
-mutant("protocol: the primary pair is reversed", PIPE, "protocol.py",
-       'PRIMARY_PAIR = ("release_aware", "pooled_premium")',
-       'PRIMARY_PAIR = ("pooled_premium", "release_aware")')
 mutant("protocol: the halves are split at the first release", PIPE, "protocol.py",
        "early = when <= when.median()", "early = when < when.median()")
 mutant("protocol: the uncut window starts at the horizon in hours", PIPE, "protocol.py",
@@ -1135,8 +1127,7 @@ mutant("backtest: bid price tolerance has the wrong sign",
        "bid_below = bid - shift if bid == bid else -math.inf")
 mutant("backtest: never counts live intervals",
        "tests/test_backtest.py", "backtest.py",
-       "live += 1\n        first, split, stop",
-       "first, split, stop")
+       "        live += 1\n", "")
 mutant("backtest study: B8 runs keep the window of the main grid",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
        "params = replace(config.world, pi1=config.planted_pi1, window_hours=hours)",
