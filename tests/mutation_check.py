@@ -959,8 +959,8 @@ mutant("backtest: mid proxy read one refresh late (look-ahead)",
        "mid = mid_proxy_asof(t, s, p, decision_ts[1:], stale_s=params.stale_s)")
 mutant("backtest: minutes to the release in hours",
        "tests/test_backtest.py", "backtest.py",
-       "tau_min=(window - refresh * steps[:-1]) / 60.0,",
-       "tau_min=(window - refresh * steps[:-1]) / 3600.0,")
+       "tau_min=decision_minutes(params),",
+       "tau_min=decision_minutes(params) / 60.0,")
 mutant("backtest: a bid fill is not limited by the quote size",
        "tests/test_backtest.py", "backtest.py",
        "take = min(bid_left, sizes[i])",
@@ -1003,8 +1003,8 @@ mutant("backtest: volatility floor from all events (look-ahead)",
        "float(vol_sum_before[n_events] / vol_count_before[n_events])")
 mutant("backtest study: sign of the primary difference",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
-       "return (wide[PRIMARY[0]] - wide[PRIMARY[1]]).to_numpy(dtype=float)",
-       "return (wide[PRIMARY[1]] - wide[PRIMARY[0]]).to_numpy(dtype=float)")
+       "return (wide[pair[0]] - wide[pair[1]]).to_numpy(dtype=float)",
+       "return (wide[pair[1]] - wide[pair[0]]).to_numpy(dtype=float)")
 mutant("backtest study: burn-in events are evaluated",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
        "done = events[events[\"evaluated\"]]\n    order =",
@@ -1123,23 +1123,22 @@ mutant("backtest study: sign of the primary difference in the B8 runs",
        "d = -primary_differences(events)\n            weights = cluster_weights(d.size,")
 mutant("backtest study: first and last bucket premiums swapped",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
-       "values = (end[\"pooled\"], end[BUCKET_LABELS[0]], end[BUCKET_LABELS[-1]])",
-       "values = (end[\"pooled\"], end[BUCKET_LABELS[-1]], end[BUCKET_LABELS[0]])")
+       ("values = (end[\"pooled\"], end[\"matched\"], end[BUCKET_LABELS[0]], "
+        "end[BUCKET_LABELS[-1]])"),
+       ("values = (end[\"pooled\"], end[\"matched\"], end[BUCKET_LABELS[-1]], "
+        "end[BUCKET_LABELS[0]])"))
 mutant("backtest study: premium after the burn-in instead of at the end",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
        "end = check.set_index(\"bucket\")[\"estimate_end\"]",
        "end = check.set_index(\"bucket\")[\"estimate_burn_in\"]")
 mutant("backtest study: the default-window row is taken from the null world",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
-       ("(pairs[\"sweep\"] == \"main\") & (pairs[\"world\"] == PLANTED_WORLD)\n        & "
-        "(pairs[\"a\"]"),
-       ("(pairs[\"sweep\"] == \"main\") & (pairs[\"world\"] == NULL_WORLD)\n        & "
-        "(pairs[\"a\"]"))
+       "planted = pairs[(pairs[\"sweep\"] == \"main\") & (pairs[\"world\"] == PLANTED_WORLD)]",
+       "planted = pairs[(pairs[\"sweep\"] == \"main\") & (pairs[\"world\"] == NULL_WORLD)]")
 mutant("backtest study: the default-window row includes the sweeps",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
-       ("(pairs[\"sweep\"] == \"main\") & (pairs[\"world\"] == PLANTED_WORLD)\n        & "
-        "(pairs[\"a\"]"),
-       "(pairs[\"world\"] == PLANTED_WORLD)\n        & (pairs[\"a\"]")
+       "planted = pairs[(pairs[\"sweep\"] == \"main\") & (pairs[\"world\"] == PLANTED_WORLD)]",
+       "planted = pairs[pairs[\"world\"] == PLANTED_WORLD]")
 mutant("backtest study: the default window is always 12 hours",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
        "\"window_hours\": config.world.window_hours, \"seed\": int(r.seed),",
@@ -1154,22 +1153,20 @@ mutant("backtest study: median of the premiums instead of the mean",
        "means = {k: float(part[k].median()) for k in WINDOW_PREMIUMS}")
 mutant("backtest study: premium in USD instead of cents in the B8 table",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
-       "_num(100.0 * s[\"premium_pooled\"]),\n            _num(100.0 * s[\"premium_near\"])",
-       "_num(s[\"premium_pooled\"]),\n            _num(100.0 * s[\"premium_near\"])")
+       "_num(100.0 * s[\"premium_pooled\"]), _num(100.0 * s[\"premium_matched\"]),",
+       "_num(s[\"premium_pooled\"]), _num(100.0 * s[\"premium_matched\"]),")
 mutant("backtest study: B8 table: bucket columns swapped",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
        "_num(100.0 * s[\"premium_near\"]), _num(100.0 * s[\"premium_far\"]),",
        "_num(100.0 * s[\"premium_far\"]), _num(100.0 * s[\"premium_near\"]),")
-mutant("backtest study: B8 table: the contains-zero count ignores the intervals above zero",
+mutant("backtest study: B1 table: the contains-zero count ignores the intervals above zero",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
-       ("str(s[\"below_zero\"]), str(s[\"above_zero\"]), str(n - s[\"below_zero\"] - "
-        "s[\"above_zero\"]),\n            _num(s[\"half_width\"]), _num(100.0"),
-       ("str(s[\"below_zero\"]), str(s[\"above_zero\"]), str(n - s[\"below_zero\"]),\n          "
-        "  _num(s[\"half_width\"]), _num(100.0"))
-mutant("backtest study: two premiums joined without and",
+       "str(n - s[\"below_zero\"] - s[\"above_zero\"]),",
+       "str(n - s[\"below_zero\"]),")
+mutant("backtest study: the last two items of a list are joined without and",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
-       "(\" and \" if len(premiums) > 1 else \"\")",
-       "(\" and \" if len(premiums) > 2 else \"\")")
+       "\", \".join(items[:-1]) + \" and \" + items[-1]",
+       "\", \".join(items[:-1]) + \", \" + items[-1]")
 mutant("backtest study: an empty list of extra windows is accepted",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
        "if not config.extra_windows:",
@@ -1178,9 +1175,9 @@ mutant("backtest study: an extra window equal to the world's is accepted",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
        "if config.world.window_hours in config.extra_windows:",
        "if config.world.window_hours not in config.extra_windows:")
-mutant("backtest study: B8 runs all four policies",
+mutant("backtest study: B8 runs all five policies",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
-       "world, rows = run_dataset(params, seed, config.quote, PRIMARY)",
+       "world, rows = run_dataset(params, seed, config.quote, WINDOW_POLICIES)",
        "world, rows = run_dataset(params, seed, config.quote)")
 mutant("backtest study: event count off by one in the B8 records",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
@@ -1200,13 +1197,250 @@ mutant("backtest study: wording of the sign",
        "{_more_or_less(-mean)} than \"")
 mutant("backtest study: manifest names the wrong bootstrap key",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
-       "default_rng([{SEED}, {KIND_WINDOW}, window index, seed])",
-       "default_rng([{SEED}, {KIND_MAIN}, window index, seed])")
+       "default_rng([{SEED}, {KIND_WINDOW}, window index, \"",
+       "default_rng([{SEED}, {KIND_MAIN}, window index, \"")
 mutant("backtest study: B8 is not written",
        "tests/test_backtest_study.py", "experiments/backtest_study.py",
        ("table_events_needed(summary, config), table_premium_check(check),\n        "
         "table_windows(summary, config),"),
        "table_events_needed(summary, config), table_premium_check(check),")
+
+
+# ---- flat_matched, the decision minutes and the matched premium, and the level-matched study
+QUOTE, BACKTEST = "tests/test_quoting.py", "tests/test_backtest.py"
+STUDY, STUDY_FILE = "tests/test_backtest_study.py", "experiments/backtest_study.py"
+FLAT = "premium = 4.0 * mm * premiums.matched * params.flat_scale"
+mutant("quoting: flat_matched without the jump variance term mm",
+       QUOTE, "quoting.py",
+       "        variance += mm\n        " + FLAT,
+       "        " + FLAT)
+mutant("quoting: flat_matched premium without the factor 4",
+       QUOTE, "quoting.py",
+       FLAT, "premium = mm * premiums.matched * params.flat_scale")
+mutant("quoting: flat_matched quotes the pooled premium",
+       QUOTE, "quoting.py",
+       FLAT, "premium = 4.0 * mm * premiums.pooled * params.flat_scale")
+mutant("quoting: flat_matched ignores the scale of the flat premium",
+       QUOTE, "quoting.py",
+       FLAT, "premium = 4.0 * mm * premiums.matched")
+mutant("quoting: flat_matched is quoted without a matched premium",
+       QUOTE, "quoting.py",
+       "        if premiums.matched is None:\n            raise ValueError(",
+       "        if False:\n            raise ValueError(")
+mutant("quoting: decision minutes counted away from the release",
+       QUOTE, "quoting.py",
+       "return (window - params.refresh_s * np.arange(n, dtype=np.float64)) / 60.0",
+       "return (window + params.refresh_s * np.arange(n, dtype=np.float64)) / 60.0")
+mutant("quoting: decision minutes round the number of decisions down",
+       QUOTE, "quoting.py",
+       "n = max(1, math.ceil(window / params.refresh_s - 1e-9))",
+       "n = max(1, math.floor(window / params.refresh_s - 1e-9))")
+mutant("quoting: decision minutes in hours",
+       QUOTE, "quoting.py",
+       "np.arange(n, dtype=np.float64)) / 60.0",
+       "np.arange(n, dtype=np.float64)) / 3600.0")
+mutant("quoting: decision minutes without the guard against rounding error",
+       f"{QUOTE} {STUDY}", "quoting.py",
+       "n = max(1, math.ceil(window / params.refresh_s - 1e-9))",
+       "n = max(1, math.ceil(window / params.refresh_s))")
+mutant("quoting: matched premium is the sum over the decisions",
+       QUOTE, "quoting.py",
+       "return float(premiums[bucket_index(taus)].mean())",
+       "return float(premiums[bucket_index(taus)].sum())")
+mutant("quoting: matched premium reads the bucket before the one of the decision",
+       QUOTE, "quoting.py",
+       "return float(premiums[bucket_index(taus)].mean())",
+       "return float(premiums[bucket_index(taus) - 1].mean())")
+mutant("quoting: the matched premium is the pooled premium",
+       QUOTE, "quoting.py",
+       "matched = None if minutes is None else matched_premium(by_bucket, minutes)",
+       "matched = None if minutes is None else pooled")
+mutant("quoting: no matched premium below the minimum number of events",
+       QUOTE, "quoting.py",
+       "return Premiums(0.0, (0.0,) * n_buckets, n_events, None if minutes is None else 0.0)",
+       "return Premiums(0.0, (0.0,) * n_buckets, n_events, None)")
+mutant("quoting: the matched premium without a usable trade ignores the floor",
+       QUOTE, "quoting.py",
+       "None if minutes is None else no_information)",
+       "None if minutes is None else 0.0)")
+mutant("quoting: the scale of the flat premium is not validated",
+       QUOTE, "quoting.py",
+       "\"vol_lookback_s\", \"horizon_s\", \"flat_scale\"):",
+       "\"vol_lookback_s\", \"horizon_s\"):")
+mutant("backtest: flat_matched is not a policy that needs premiums",
+       f"{BACKTEST} {STUDY}", "backtest.py",
+       "_PREMIUM_POLICIES = (\"pooled_premium\", \"flat_matched\", \"release_aware\")",
+       "_PREMIUM_POLICIES = (\"pooled_premium\", \"release_aware\")")
+mutant("backtest: the premiums are estimated without the decision minutes",
+       BACKTEST, "backtest.py",
+       "                    minutes=minutes,\n", "")
+mutant("backtest: the decision minutes of a market run from the release",
+       BACKTEST, "backtest.py",
+       "tau_min=decision_minutes(params),",
+       "tau_min=decision_minutes(params)[::-1],")
+USED = "used = {\"P1\": n_releases, \"P2\": p2[\"n_releases\"]}"
+mutant("protocol: the number of releases of P2 is the number of releases kept",
+       "tests/test_protocol.py tests/test_pipeline.py", "protocol.py",
+       USED, "used = {\"P1\": n_releases, \"P2\": n_releases}")
+mutant("protocol: a test with exactly the minimum number of releases is exploratory",
+       "tests/test_protocol.py tests/test_pipeline.py", "protocol.py",
+       "used[name] < settings.min_releases",
+       "used[name] <= settings.min_releases")
+mutant("protocol: P3 is labelled exploratory by a count of zero releases",
+       "tests/test_protocol.py tests/test_pipeline.py", "protocol.py",
+       USED, "used = {\"P1\": n_releases, \"P2\": p2[\"n_releases\"], \"P3\": 0}")
+mutant("backtest study: the primary pair is reversed",
+       STUDY, STUDY_FILE,
+       "PRIMARY = (\"release_aware\", \"flat_matched\")",
+       "PRIMARY = (\"flat_matched\", \"release_aware\")")
+mutant("backtest study: the primary difference alone has the wrong sign",
+       STUDY, STUDY_FILE,
+       "return pair_differences(events, PRIMARY)",
+       "return -pair_differences(events, PRIMARY)")
+mutant("backtest study: B9 runs flat_matched at the scale of the main grid",
+       STUDY, STUDY_FILE,
+       "quote = replace(config.quote, flat_scale=scale)",
+       "quote = config.quote")
+mutant("backtest study: B9 bootstrap draws do not depend on the scale",
+       STUDY, STUDY_FILE,
+       "boot_rng(KIND_LEVEL, i, seed)",
+       "boot_rng(KIND_LEVEL, 0, seed)")
+mutant("backtest study: B9 index of the scale off by one in the bootstrap key",
+       STUDY, STUDY_FILE,
+       "boot_rng(KIND_LEVEL, i, seed)",
+       "boot_rng(KIND_LEVEL, i + 1, seed)")
+mutant("backtest study: sign of the B9 difference",
+       STUDY, STUDY_FILE,
+       "d = primary_differences(pd.concat([aware_events, flat_events], ignore_index=True))",
+       "d = -primary_differences(pd.concat([aware_events, flat_events], ignore_index=True))")
+mutant("backtest study: the flat premium of B9 is not multiplied by the scale",
+       STUDY, STUDY_FILE,
+       "\"premium_flat\": scale * float(end.loc[\"matched\", \"estimate_end\"]),",
+       "\"premium_flat\": float(end.loc[\"matched\", \"estimate_end\"]),")
+mutant("backtest study: B9 reference premium is the matched one",
+       STUDY, STUDY_FILE,
+       "\"premium_pooled\": float(end.loc[\"pooled\", \"estimate_end\"]),",
+       "\"premium_pooled\": float(end.loc[\"matched\", \"estimate_end\"]),")
+mutant("backtest study: a repeated scale is accepted in B9",
+       STUDY, STUDY_FILE,
+       "if len(set(levels)) != len(levels):",
+       "if False:")
+mutant("backtest study: B9 scales in input order",
+       STUDY, STUDY_FILE,
+       "levels.groupby(\"flat_scale\", sort=True)",
+       "levels.groupby(\"flat_scale\", sort=False)")
+mutant("backtest study: the sign change is interpolated with the sum of the means",
+       STUDY, STUDY_FILE,
+       "(f_b - f_a) * d_a / (d_a - d_b), f_a, f_b))",
+       "(f_b - f_a) * d_a / (d_a + d_b), f_a, f_b))")
+mutant("backtest study: a mean that touches zero is a sign change",
+       STUDY, STUDY_FILE,
+       "if after != 0.0 and (after > 0.0) != (d_a > 0.0):",
+       "if after != 0.0 and (after > 0.0) == (d_a > 0.0):")
+mutant("backtest study: B9 table: the matched premium taken at the first scale",
+       STUDY, STUDY_FILE,
+       "matched = first[\"premium_flat\"] / first[\"flat_scale\"]",
+       "matched = first[\"premium_flat\"]")
+mutant("backtest study: B9 table: not every policy loses money is not checked",
+       STUDY, STUDY_FILE,
+       "if losing == len(POLICIES):",
+       "if losing >= 0:")
+mutant("backtest study: B9 table: the flat premium in USD instead of cents",
+       STUDY, STUDY_FILE,
+       "f\"{s['flat_scale']:g}\", _num(100.0 * s[\"premium_flat\"]),",
+       "f\"{s['flat_scale']:g}\", _num(s[\"premium_flat\"]),")
+mutant("backtest study: the secondary difference of B8 is the primary one",
+       STUDY, STUDY_FILE,
+       "mean_difference(e, counts).items()}",
+       "mean_difference(d, counts).items()}")
+mutant("backtest study: the secondary difference of B8 shares the key of the primary",
+       STUDY, STUDY_FILE,
+       "boot_rng(KIND_WINDOW, i, seed, SECONDARY_KEY)",
+       "boot_rng(KIND_WINDOW, i, seed)")
+mutant("backtest study: B8 runs only release_aware and pooled_premium",
+       STUDY, STUDY_FILE,
+       "WINDOW_POLICIES = (\"release_aware\", \"flat_matched\", \"pooled_premium\")",
+       "WINDOW_POLICIES = (\"release_aware\", \"pooled_premium\")")
+mutant("backtest study: the default-window secondary row is the primary row",
+       STUDY, STUDY_FILE,
+       "secondary = planted[(planted[\"a\"] == SECONDARY[0]) & (planted[\"b\"] == SECONDARY[1])]",
+       "secondary = planted[(planted[\"a\"] == SECONDARY[0]) & (planted[\"b\"] == PRIMARY[1])]")
+mutant("backtest study: the secondary summary of B8 is the primary one",
+       STUDY, STUDY_FILE,
+       "\"secondary\": across_datasets(second),",
+       "\"secondary\": across_datasets(part),")
+mutant("backtest study: the matched row of the premium check repeats the pooled target",
+       STUDY, STUDY_FILE,
+       "\"target\": [*by_bucket[\"target\"], pooled[\"target\"], matched[\"target\"]],",
+       "\"target\": [*by_bucket[\"target\"], pooled[\"target\"], pooled[\"target\"]],")
+mutant("backtest study: the matched row of the premium check is the pooled estimate",
+       STUDY, STUDY_FILE,
+       "\"estimate_end\": [*end.by_bucket, end.pooled, end.matched],",
+       "\"estimate_end\": [*end.by_bucket, end.pooled, end.pooled],")
+mutant("backtest study: the premiums known at an event are estimated without the decisions",
+       f"{STUDY}::test_the_premiums_known_at_an_event_use_only_events_released_before_its_window",
+       STUDY_FILE,
+       "        minutes=decision_minutes(quote),\n",
+       "")
+mutant("backtest study: B7 reads the pooled premium as the matched one",
+       STUDY, STUDY_FILE,
+       "matched = float(mean.loc[(PLANTED_WORLD, \"matched\"), \"estimate_end\"])",
+       "matched = float(mean.loc[(PLANTED_WORLD, \"pooled\"), \"estimate_end\"])")
+mutant("backtest study: the change of a premium is relative to the last window",
+       STUDY, STUDY_FILE,
+       "100.0 * (last / first - 1.0)",
+       "100.0 * (first / last - 1.0)")
+mutant("backtest study: B3 also lists the primary pair",
+       STUDY, STUDY_FILE,
+       "for a, b in PAIRS[1:]:",
+       "for a, b in PAIRS:")
+mutant("backtest study: the manifest names the wrong bootstrap key of B9",
+       STUDY, STUDY_FILE,
+       "default_rng([{SEED}, {KIND_LEVEL}, index of F, seed])",
+       "default_rng([{SEED}, {KIND_MAIN}, index of F, seed])")
+
+
+# ---- the rehearsal (experiments/rehearsal.py)
+REH, REH_FILE = "tests/test_rehearsal.py", "experiments/rehearsal.py"
+mutant("rehearsal: the default world has fewer events than the protocol needs",
+       REH, REH_FILE, "N_EVENTS = 200\n", "N_EVENTS = 50\n")
+mutant("rehearsal: the default window is shorter than a day",
+       REH, REH_FILE, "WINDOW_HOURS = 30.0\n", "WINDOW_HOURS = 20.0\n")
+mutant("rehearsal: the world is generated with seed zero",
+       REH, REH_FILE, "generate_world(params, args.seed)", "generate_world(params, 0)")
+mutant("rehearsal: the option for the number of events is ignored",
+       REH, REH_FILE, "WorldParams(n_events=args.n_events,", "WorldParams(n_events=N_EVENTS,")
+mutant("rehearsal: the option for the window is ignored",
+       REH, REH_FILE, "window_hours=args.window_hours)", "window_hours=WINDOW_HOURS)")
+mutant("rehearsal: the seed option defaults to zero",
+       REH, REH_FILE, "ap.add_argument(\"--seed\", type=int, default=DEFAULT.seed)",
+       "ap.add_argument(\"--seed\", type=int, default=0)")
+mutant("rehearsal: the synthetic world is stored with the label of real data",
+       REH, REH_FILE, "source=\"synthetic\")", "source=\"kalshi-public-api\")")
+mutant("rehearsal: the protocol runs on the frames of the world, not on those read back",
+       REH, REH_FILE, "tape, markets, events = read_dataset(conn)",
+       "tape, markets, events = world.tape, world.markets, world.events")
+mutant("rehearsal: the settings given with --set are dropped",
+       REH, REH_FILE, "with_overrides(DEFAULT, args.assign)", "DEFAULT")
+mutant("rehearsal: the manifest names the default seed",
+       REH, REH_FILE, "Manifest(\"kalshi_mm.experiments.rehearsal\", args.seed, args=argv)",
+       "Manifest(\"kalshi_mm.experiments.rehearsal\", DEFAULT.seed, args=argv)")
+mutant("rehearsal: the manifest records the arguments of the process, not those of the call",
+       REH, REH_FILE, "args.seed, args=argv)", "args.seed, args=None)")
+mutant("rehearsal: the world line of the manifest names the default seed",
+       REH, REH_FILE, "hours, seed {args.seed}, ", "hours, seed {DEFAULT.seed}, ")
+mutant("rehearsal: the tables are written to the working directory",
+       REH, REH_FILE, "write_results(results, args.out)", "write_results(results, Path(\".\"))")
+mutant("rehearsal: the manifest is written to the working directory",
+       REH, REH_FILE, "manifest.write(args.out,", "manifest.write(Path(\".\"),")
+mutant("rehearsal: the manifest has no count lines",
+       REH, REH_FILE,
+       "        *[f\"count, {k}: {v}\" for k, v in results.dataset.counts.items()],\n", "")
+mutant("rehearsal: the manifest does not say that the data is synthetic",
+       REH, REH_FILE, "notes=\"synthetic data; read back from SQLite like the real run\")",
+       "notes=\"\")")
+mutant("rehearsal: a finished run returns a failure code",
+       REH, REH_FILE, "    return 0\n", "    return 1\n")
 
 
 def run_pytest(work: Path, targets: list[str], timeout: float):
