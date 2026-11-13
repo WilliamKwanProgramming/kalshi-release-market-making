@@ -21,10 +21,16 @@ The design was fixed before any result was looked at:
   of the primary interval against the number of evaluated events (the first n of the 180);
 * a check of the estimated premiums against their target and against the latent price impact.
 
+Table B8 is not part of that design. It was added after the first results, because B1 (12 hours
+of trading before each release) and the rehearsal of the protocol analysis (30 hours) disagreed
+in the sign of the primary difference. It repeats the primary comparison in the planted world
+with 30 hours of trading before each release (``WorldParams.window_hours``), on the same dataset
+seeds, and is exploratory.
+
 Writes ``per_event.csv``, ``policies.csv``, ``pairs.csv``, ``events_needed.csv``,
-``premium_check.csv``, ``summary.json``, ``tables.md`` and ``backtest_study.manifest.txt``. The
-latent columns of the world are read only by the premium check; the backtest gets a tape without
-them.
+``premium_check.csv``, ``windows.csv``, ``per_event_windows.csv``, ``summary.json``,
+``tables.md`` and ``backtest_study.manifest.txt``. The latent columns of the world are read only
+by the premium check; the backtest gets a tape without them.
 """
 
 from __future__ import annotations
@@ -32,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -65,9 +72,10 @@ LEVEL = 0.95
 Z_95 = 1.959963984540054
 Z_POWER_80 = 0.8416212335729143
 MIN_SCALE = 0.05  # trades with m (1 - m) below this are left out of the premium (model.md 6)
+WINDOW_PREMIUMS = ("premium_pooled", "premium_near", "premium_far")  # the premium columns of B8
 
 # the first key of a bootstrap generator, default_rng([SEED, KIND, ...]), names the analysis
-KIND_MAIN, KIND_SWEEP, KIND_TOUCH, KIND_EVENTS = 1, 2, 3, 4
+KIND_MAIN, KIND_SWEEP, KIND_TOUCH, KIND_EVENTS, KIND_WINDOW = 1, 2, 3, 4, 5
 
 
 @dataclass(frozen=True)
@@ -83,6 +91,9 @@ class StudyConfig:
     sweep_fees: tuple[float, ...] = (0.0175, 0.0)
     sweep_seed: int = 1
     event_counts: tuple[int, ...] = (20, 40, 60, 80, 100, 120, 140, 160, 180)
+    # hours of trading before each release in the exploratory runs of B8, besides the
+    # ``world.window_hours`` of the main grid
+    extra_windows: tuple[float, ...] = (30.0,)
 
     def worlds(self) -> tuple[tuple[str, float], ...]:
         """The two worlds of the main grid as ``(name, pi1)``. The names are not ``null`` and
@@ -97,15 +108,15 @@ def boot_rng(*key: int) -> np.random.Generator:
 
 
 def run_dataset(
-    world_params: WorldParams, seed: int, quote: QuoteParams
+    world_params: WorldParams, seed: int, quote: QuoteParams, policies: Sequence[str] = POLICIES
 ) -> tuple[World, pd.DataFrame]:
-    """Generate a world and run the walk-forward of all four policies on it.
+    """Generate a world and run the walk-forward of ``policies`` (all four by default) on it.
 
     The tape that the backtest sees has no ``latent_`` column.
     """
     world = generate_world(world_params, seed)
     tape = world.tape.drop(columns=[c for c in world.tape if str(c).startswith("latent_")])
-    return world, walk_forward(tape, world.markets, world.events, POLICIES, quote)
+    return world, walk_forward(tape, world.markets, world.events, policies, quote)
 
 
 def event_table(rows: pd.DataFrame) -> pd.DataFrame:
@@ -314,6 +325,64 @@ def premium_check(world: World, quote: QuoteParams, seed: int, name: str) -> pd.
     )
 
 
+def window_premiums(check: pd.DataFrame) -> dict[str, float]:
+    """The premiums at the end of a dataset that B8 shows, from its premium check (one dataset):
+    the pooled one and those of the first and of the last bucket, in USD per contract per unit
+    of ``4 m (1 - m)``."""
+    end = check.set_index("bucket")["estimate_end"]
+    values = (end["pooled"], end[BUCKET_LABELS[0]], end[BUCKET_LABELS[-1]])
+    return {name: float(v) for name, v in zip(WINDOW_PREMIUMS, values, strict=True)}
+
+
+def default_window_records(
+    config: StudyConfig, pairs: pd.DataFrame, check: pd.DataFrame
+) -> pd.DataFrame:
+    """The row of B8 for the hours of trading of the main grid: the primary difference of the
+    planted datasets of the main grid (the planted row of B1) and their premiums at the end."""
+    primary = pairs[
+        (pairs["sweep"] == "main") & (pairs["world"] == PLANTED_WORLD)
+        & (pairs["a"] == PRIMARY[0]) & (pairs["b"] == PRIMARY[1])
+    ]
+    rows = []
+    for r in primary.itertuples():
+        planted = check[(check["world"] == PLANTED_WORLD) & (check["seed"] == r.seed)]
+        rows.append({
+            "window_hours": config.world.window_hours, "seed": int(r.seed),
+            "n_events": int(r.n_events), "mean": r.mean, "lo": r.lo, "hi": r.hi,
+            **window_premiums(planted),
+        })
+    return pd.DataFrame(rows)
+
+
+def window_runs(config: StudyConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The exploratory runs of B8: the planted world with each of ``config.extra_windows`` hours
+    of trading before the release, on every dataset seed; only the two policies of the primary
+    pair are run (their rows do not depend on the other policies). Returns one record per window
+    and dataset (the primary difference with its interval and the premiums at the end) and the
+    net P&L per event of the two policies. The bootstrap counts come from
+    ``default_rng([SEED, KIND_WINDOW, index of the window in extra_windows, seed])``."""
+    if not config.extra_windows:
+        raise ValueError("extra_windows is empty: B8 needs a window to compare with")
+    if config.world.window_hours in config.extra_windows:
+        raise ValueError("extra_windows must differ from the hours of trading of the world")
+    records, per_event = [], []
+    for i, hours in enumerate(config.extra_windows):
+        params = replace(config.world, pi1=config.planted_pi1, window_hours=hours)
+        for seed in config.seeds:
+            world, rows = run_dataset(params, seed, config.quote, PRIMARY)
+            events = event_table(rows)
+            d = primary_differences(events)
+            weights = cluster_weights(d.size, config.boot_reps, boot_rng(KIND_WINDOW, i, seed))
+            premiums = window_premiums(premium_check(world, config.quote, seed, PLANTED_WORLD))
+            records.append({
+                "window_hours": hours, "seed": seed, "n_events": int(d.size),
+                **mean_difference(d, weights), **premiums,
+            })
+            kept = events[["event", "policy", "pnl", "evaluated"]]
+            per_event.append(kept.assign(window_hours=hours, seed=seed))
+    return pd.DataFrame(records), pd.concat(per_event, ignore_index=True)
+
+
 # ---------------------------------------------------------------------------------- summaries
 def _clean(obj: Any) -> Any:
     """JSON-ready copy: numpy scalars as Python numbers, NaN and infinity as null."""
@@ -344,6 +413,16 @@ def across_datasets(pairs: pd.DataFrame) -> dict[str, float]:
         "above_zero": int((pairs["lo"] > 0.0).sum()),
         "half_width": float(((pairs["hi"] - pairs["lo"]) / 2.0).mean()),
     }
+
+
+def window_summary(windows: pd.DataFrame) -> list[dict[str, float]]:
+    """One entry per hours of trading, in increasing order: :func:`across_datasets` of the primary
+    difference and the mean over the datasets of the three premiums at the end."""
+    out = []
+    for hours, part in windows.groupby("window_hours", sort=True):
+        means = {k: float(part[k].mean()) for k in WINDOW_PREMIUMS}
+        out.append({"window_hours": float(hours), **across_datasets(part), **means})
+    return out
 
 
 def sample_size(per_event: pd.DataFrame) -> dict[str, float]:
@@ -407,9 +486,10 @@ def build_summary(
     needed: pd.DataFrame,
     size: dict[str, float],
     check: pd.DataFrame,
+    windows: pd.DataFrame,
 ) -> dict[str, Any]:
     """Everything the tables quote, by name (``policies`` and ``pairs`` hold the main grid and
-    the sweeps)."""
+    the sweeps; ``windows`` the records of B8)."""
     main = pairs[pairs["sweep"] == "main"]
     summary: dict[str, Any] = {
         "design": {
@@ -419,6 +499,7 @@ def build_summary(
             "bootstrap_replications": config.boot_reps,
             "bootstrap_level": LEVEL,
             "burn_in_events": config.quote.min_history_events,
+            "extra_windows": list(config.extra_windows),
             "quote_params": asdict(config.quote),
             "primary": list(PRIMARY),
         },
@@ -428,6 +509,7 @@ def build_summary(
         "events_needed": [],
         "sample_size": size,
         "premium_check": {},
+        "windows": window_summary(windows),
     }
     for world, _ in config.worlds():
         for a, b in PAIRS:
@@ -491,6 +573,14 @@ def _pair(a: str, b: str) -> str:
     return f"`{a}` minus `{b}`"
 
 
+def _earned(mean: float) -> str:
+    """Words for the primary difference ``mean``: what ``release_aware`` earned per event."""
+    if mean == 0.0:
+        return f"`{PRIMARY[0]}` and `{PRIMARY[1]}` earned the same per event"
+    return (f"`{PRIMARY[0]}` earned {_num(abs(mean))} USD per event {_more_or_less(mean)} than "
+            f"`{PRIMARY[1]}`")
+
+
 def _interval(cell: dict[str, Any]) -> str:
     p = cell["primary"]
     lo, hi = _num(p["lo"], signed=True), _num(p["hi"], signed=True)
@@ -509,14 +599,9 @@ def table_primary(summary: dict[str, Any], config: StudyConfig) -> str:
             str(s["below_zero"]), str(s["above_zero"]), str(n - s["below_zero"] - s["above_zero"]),
             _num(s["half_width"]),
         ])
-        if s["mean"] == 0.0:
-            earned = f"`{PRIMARY[0]}` and `{PRIMARY[1]}` earned the same per event"
-        else:
-            earned = (f"`{PRIMARY[0]}` earned {_num(abs(s['mean']))} USD per event "
-                      f"{_more_or_less(s['mean'])} than `{PRIMARY[1]}`")
         sentences.append(
-            f"In the {_label(world)} world {earned} (mean of {n} datasets, range {spread}; "
-            f"{_excluded(s['below_zero'], s['above_zero'], n)})."
+            f"In the {_label(world)} world {_earned(s['mean'])} (mean of {n} datasets, range "
+            f"{spread}; {_excluded(s['below_zero'], s['above_zero'], n)})."
         )
     table = _markdown(
         ["World", "Mean difference, USD per event (MC SE over datasets)", "Range over datasets",
@@ -723,12 +808,59 @@ def table_premium_check(check: pd.DataFrame) -> str:
     )
 
 
+def table_windows(summary: dict[str, Any], config: StudyConfig) -> str:
+    """B8, exploratory: the primary difference in the planted world by hours of trading before
+    each release, with the premiums estimated at the end of each dataset."""
+    rows = summary["windows"]
+    body, sentences, premiums = [], [], []
+    for s in rows:
+        n, hours = s["n_datasets"], f"{s['window_hours']:g}"
+        body.append([
+            hours, str(n), f"{_num(s['mean'], signed=True)} ({_num(s['mc_se'])})",
+            f"{_num(s['min'], signed=True)} to {_num(s['max'], signed=True)}",
+            str(s["below_zero"]), str(s["above_zero"]), str(n - s["below_zero"] - s["above_zero"]),
+            _num(s["half_width"]), _num(100.0 * s["premium_pooled"]),
+            _num(100.0 * s["premium_near"]), _num(100.0 * s["premium_far"]),
+        ])
+        sentences.append(
+            f"With {hours} hours of trading before each release {_earned(s['mean'])} (mean of {n} "
+            f"datasets; {_excluded(s['below_zero'], s['above_zero'], n)})."
+        )
+        premiums.append(f"{_num(100.0 * s['premium_pooled'])} cents with {hours} hours")
+    joined = ", ".join(premiums[:-1]) + (" and " if len(premiums) > 1 else "") + premiums[-1]
+    reading = (
+        "Exploratory: added after the first results because B1 and the rehearsal of the protocol "
+        "analysis disagreed in sign; it was not part of the design fixed beforehand. "
+        + " ".join(sentences) + f" The pooled premium estimated at the end is {joined}. Intervals "
+        f"are percentile intervals of a cluster bootstrap over events with {config.boot_reps:,} "
+        f"replications."
+    )
+    near, far = BUCKET_LABELS[0], BUCKET_LABELS[-1]
+    table = _markdown(
+        ["Hours of trading before each release", "Datasets",
+         "Mean difference, USD per event (MC SE over datasets)", "Range over datasets",
+         "95% interval below zero", "95% interval above zero", "95% interval contains zero",
+         "Mean interval half-width, USD", "Pooled premium at the end, cents",
+         f"Premium of the bucket {near} at the end, cents",
+         f"Premium of the bucket {far} at the end, cents"],
+        body,
+    )
+    return _block(
+        "B8", f"Exploratory: {_pair(*PRIMARY)} by hours of trading before each release, planted "
+        "world", reading, table,
+        "the mechanism: a longer window adds trades before the quoting window to the premium "
+        "sample and to the history of the mid proxy together, and only the window differs "
+        "between the rows.",
+    )
+
+
 def write_tables(summary: dict[str, Any], config: StudyConfig, check: pd.DataFrame) -> str:
     """The text of ``tables.md``."""
     return "\n".join([
         table_primary(summary, config), table_policies(summary, config),
         table_pairs(summary, config), table_sweep(summary, config), table_touch(summary, config),
         table_events_needed(summary, config), table_premium_check(check),
+        table_windows(summary, config),
     ])
 
 
@@ -740,9 +872,13 @@ def run_study(config: StudyConfig, out: Path, manifest: Manifest) -> dict[str, A
     per_event, policies, pairs, check = main_grid(config)
     sweep_policies, sweep_pairs = sweeps(config)
     needed = events_needed(config, per_event)
+    extra, extra_events = window_runs(config)
+    windows = pd.concat([default_window_records(config, pairs, check), extra], ignore_index=True)
     policies = pd.concat([policies, sweep_policies], ignore_index=True)
     pairs = pd.concat([pairs, sweep_pairs], ignore_index=True)
-    summary = build_summary(config, policies, pairs, needed, sample_size(per_event), check)
+    summary = build_summary(
+        config, policies, pairs, needed, sample_size(per_event), check, windows
+    )
 
     csv = {"index": False, "float_format": "%.10g"}
     columns = ["world", "seed", "event", "policy", "pnl", "gross", "fees", "fills", "contracts",
@@ -752,6 +888,10 @@ def run_study(config: StudyConfig, out: Path, manifest: Manifest) -> dict[str, A
     pairs.to_csv(out / "pairs.csv", **csv)
     needed.to_csv(out / "events_needed.csv", **csv)
     check.to_csv(out / "premium_check.csv", **csv)
+    windows.to_csv(out / "windows.csv", **csv)
+    extra_events[["window_hours", "seed", "event", "policy", "pnl", "evaluated"]].to_csv(
+        out / "per_event_windows.csv", **csv
+    )
     (out / "summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n")
     (out / "tables.md").write_text(write_tables(summary, config, check))
     manifest.extra += [
@@ -761,11 +901,16 @@ def run_study(config: StudyConfig, out: Path, manifest: Manifest) -> dict[str, A
         f"bootstrap: {config.boot_reps} replications over events, 95% percentile intervals, "
         f"generators default_rng([{SEED}, analysis, ...])",
         f"quote parameters: {config.quote}",
+        f"B8, added after the first results (exploratory): the planted world with "
+        f"{', '.join(f'{h:g}' for h in config.extra_windows)} hours of trading before each "
+        f"release instead of {config.world.window_hours:g}, the same dataset seeds, only the "
+        f"policies {PRIMARY[0]} and {PRIMARY[1]}; bootstrap generators "
+        f"default_rng([{SEED}, {KIND_WINDOW}, window index, seed])",
     ]
     manifest.write(
         out, "backtest_study",
         ["per_event.csv", "policies.csv", "pairs.csv", "events_needed.csv", "premium_check.csv",
-         "summary.json", "tables.md"],
+         "windows.csv", "per_event_windows.csv", "summary.json", "tables.md"],
         notes=f"{config.quote.min_history_events} burn-in events per dataset; sweeps on dataset "
               f"seed {config.sweep_seed}",
     )

@@ -1,5 +1,6 @@
 """The backtest study: its statistics against hand and independent computations, and its files."""
 
+import importlib.util
 import json
 import math
 import re
@@ -19,6 +20,15 @@ from kalshi_mm.world import WorldParams, generate_world
 
 NAN = float("nan")
 NULL, PLANTED = bs.NULL_WORLD, bs.PLANTED_WORLD
+
+
+def load_make_tables():
+    """The script that pastes tables into README.md, loaded by path (it is not a package)."""
+    path = REPO / "scripts" / "make_tables.py"
+    spec = importlib.util.spec_from_file_location("make_tables", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def make_events(pnl, evaluated=None):
@@ -59,6 +69,14 @@ def test_the_default_design_is_the_preregistered_one():
     assert bs.PRIMARY == ("release_aware", "pooled_premium") == bs.PAIRS[0]
     assert len(set(bs.PAIRS)) == 6 == len({frozenset(p) for p in bs.PAIRS})
     assert {p for pair in bs.PAIRS for p in pair} == set(POLICIES)
+
+
+def test_the_exploratory_window_of_b8_is_30_hours_on_the_same_seeds():
+    config = bs.StudyConfig()
+    assert config.extra_windows == (30.0,) and config.world.window_hours == 12.0
+    assert 30.0 != config.world.window_hours and config.planted_pi1 == 0.20
+    assert len({bs.KIND_MAIN, bs.KIND_SWEEP, bs.KIND_TOUCH, bs.KIND_EVENTS, bs.KIND_WINDOW}) == 5
+    assert bs.WINDOW_PREMIUMS == ("premium_pooled", "premium_near", "premium_far")
 
 
 def test_main_runs_the_default_design(monkeypatch, tmp_path):
@@ -261,6 +279,7 @@ SMALL = bs.StudyConfig(
     boot_reps=300,
     sweep_pi1=(0.0, 0.20),
     event_counts=(10, 25),
+    extra_windows=(8.0,),  # 6 hours of trading before the quoting window: trades in the last bucket
 )
 
 
@@ -279,12 +298,15 @@ def read(small, name):
 def test_the_files_are_written(small):
     names = sorted(p.name for p in small["out"].iterdir())
     assert names == ["backtest_study.manifest.txt", "events_needed.csv", "pairs.csv",
-                     "per_event.csv", "policies.csv", "premium_check.csv", "summary.json",
-                     "tables.md"]
+                     "per_event.csv", "per_event_windows.csv", "policies.csv",
+                     "premium_check.csv", "summary.json", "tables.md", "windows.csv"]
     manifest = (small["out"] / "backtest_study.manifest.txt").read_text()
     assert "command: python -m kalshi_mm.experiments.backtest_study --out results/small" in manifest
     assert "seeds: test" in manifest and "bootstrap: 300 replications" in manifest
     assert "dataset seeds 1 to 3" in manifest and str(REPO) not in manifest
+    assert "B8, added after the first results (exploratory): the planted world with 8 hours " \
+           "of trading before each release instead of 2" in manifest
+    assert "default_rng([20261113, 5, window index, seed])" in manifest
     assert json.loads((small["out"] / "summary.json").read_text()) == small["summary"]
 
 
@@ -362,11 +384,13 @@ def test_tables_follow_the_block_format(small):
     text = (small["out"] / "tables.md").read_text()
     headings = re.findall(r"(?m)^### .*$", text)
     assert [re.match(r"### (B\d+)\. ", h).group(1) for h in headings] == [
-        "B1", "B2", "B3", "B4", "B5", "B6", "B7"]
+        "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8"]
     assert all(h.endswith(" (synthetic data)") for h in headings)
+    heading = load_make_tables().HEADING  # the pattern that finds the tables for the README
+    assert [m.group(1) for m in heading.finditer(text)] == [f"B{i}" for i in range(1, 9)]
     blocks = re.split(r"(?m)^(?=### )", text.strip() + "\n")
     blocks = [b.strip() for b in blocks if b.strip()]
-    assert len(blocks) == 7
+    assert len(blocks) == 8
     for block in blocks:
         paragraphs = block.split("\n\n")
         assert len(paragraphs) == 4, block[:80]
@@ -401,7 +425,8 @@ def test_a_second_run_gives_the_same_files(small, tmp_path):
     manifest = Manifest("kalshi_mm.experiments.backtest_study", "test", ["--out", "x"])
     bs.run_study(SMALL, tmp_path, manifest)
     for name in ("per_event.csv", "policies.csv", "pairs.csv", "events_needed.csv",
-                 "premium_check.csv", "summary.json", "tables.md"):
+                 "premium_check.csv", "windows.csv", "per_event_windows.csv", "summary.json",
+                 "tables.md"):
         assert (tmp_path / name).read_bytes() == (small["out"] / name).read_bytes(), name
 
 
@@ -504,3 +529,241 @@ def test_the_reading_of_the_events_needed_table_handles_a_zero_effect():
     block = bs.table_events_needed({"events_needed": rows, "sample_size": size}, config)
     assert "about 35 evaluated events" in block and "about 71 would give" in block
     assert "(-1.00 USD per event)" in block
+
+
+# ------------------------------------------------------------ B8: hours of trading (exploratory)
+def check_frame(rows):
+    """A premium check (one row per world, seed and bucket) from ``{(world, seed): [premium of each
+    bucket, then the pooled premium]}``; only ``estimate_end`` is filled with the given numbers."""
+    frames = []
+    for (world, seed), values in rows.items():
+        assert len(values) == len(BUCKET_LABELS) + 1
+        frames.append(pd.DataFrame({"world": world, "seed": seed,
+                                    "bucket": [*BUCKET_LABELS, "pooled"],
+                                    "estimate_end": values}))
+    return pd.concat(frames, ignore_index=True)
+
+
+def test_window_premiums_are_the_pooled_and_the_first_and_last_bucket():
+    values = [0.10, 0.08, 0.06, 0.04, 0.03, 0.02, 0.01, 0.05]
+    got = bs.window_premiums(check_frame({(PLANTED, 1): values}))
+    assert got == {"premium_pooled": 0.05, "premium_near": 0.10, "premium_far": 0.01}
+
+
+def test_the_default_window_row_is_the_planted_primary_row_of_the_main_grid():
+    def pair(sweep, world, seed, a, b, mean):
+        return {"sweep": sweep, "world": world, "seed": seed, "a": a, "b": b, "n_events": 180,
+                "mean": mean, "lo": mean - 1.0, "hi": mean + 1.0}
+
+    primary = bs.PRIMARY
+    pairs = pd.DataFrame([
+        pair("main", PLANTED, 1, *primary, -1.0), pair("main", PLANTED, 2, *primary, -2.0),
+        pair("main", NULL, 1, *primary, 50.0),  # another world
+        pair("main", PLANTED, 1, "release_aware", "always_on", 60.0),  # another pair
+        pair("touch", PLANTED, 1, *primary, 70.0),  # a sweep
+    ])
+    check = check_frame({
+        (PLANTED, 1): [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+        (PLANTED, 2): [1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8],
+        (NULL, 1): [9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 9.7, 9.8],
+    })
+    rows = bs.default_window_records(bs.StudyConfig(), pairs, check)
+    assert rows[["window_hours", "seed", "n_events"]].values.tolist() == [[12.0, 1, 180],
+                                                                           [12.0, 2, 180]]
+    assert rows[["mean", "lo", "hi"]].values.tolist() == [[-1.0, -2.0, 0.0], [-2.0, -3.0, -1.0]]
+    # the pooled premium is the last row of a check, the buckets are the first seven
+    np.testing.assert_allclose(rows[list(bs.WINDOW_PREMIUMS)].to_numpy(),
+                               [[0.8, 0.1, 0.7], [1.8, 1.1, 1.7]], rtol=1e-12)
+
+
+def test_window_summary_by_hand():
+    windows = pd.DataFrame({
+        "window_hours": [30.0, 30.0, 12.0, 12.0, 12.0], "seed": [1, 2, 1, 2, 3], "n_events": 180,
+        "mean": [1.0, 3.0, -1.0, -3.0, -2.0], "lo": [0.5, -1.0, -2.0, -4.0, -2.5],
+        "hi": [1.5, 7.0, -0.5, -2.0, 0.5],
+        "premium_pooled": [0.02, 0.04, 0.03, 0.05, 0.10],
+        "premium_near": [0.1, 0.3, 0.2, 0.4, 0.9],
+        "premium_far": [0.0, 0.01, 0.02, 0.03, 0.10],
+    })
+    short, long = bs.window_summary(windows)  # increasing hours of trading
+    assert (short["window_hours"], long["window_hours"]) == (12.0, 30.0)
+    assert (short["n_datasets"], long["n_datasets"]) == (3, 2) and short["mean"] == -2.0
+    assert short["mc_se"] == pytest.approx(1.0 / math.sqrt(3))  # sd 1 of -1, -3, -2
+    assert (short["min"], short["max"]) == (-3.0, -1.0)
+    assert (short["below_zero"], short["above_zero"]) == (2, 0)  # the third interval has zero in it
+    assert short["half_width"] == pytest.approx(np.mean([0.75, 1.0, 1.5]))
+    assert (long["below_zero"], long["above_zero"]) == (0, 1)  # the second interval contains zero
+    # the premiums are means over the datasets (the medians would be 0.05, 0.4 and 0.03)
+    assert [short[k] for k in bs.WINDOW_PREMIUMS] == pytest.approx([0.06, 0.5, 0.05])
+    assert [long[k] for k in bs.WINDOW_PREMIUMS] == pytest.approx([0.03, 0.2, 0.005])
+
+
+def fake_windows(entries):
+    """A summary with the B8 entries ``(hours, mean, below, above, pooled, near, far)``."""
+    return {"windows": [
+        {"window_hours": h, "n_datasets": 10, "mean": m, "mc_se": 0.1, "min": m - 1.0,
+         "max": m + 1.0, "below_zero": b, "above_zero": a, "half_width": 0.5,
+         "premium_pooled": pooled, "premium_near": near, "premium_far": far}
+        for h, m, b, a, pooled, near, far in entries]}
+
+
+def test_the_reading_of_the_window_table_follows_the_sign_and_says_it_is_exploratory():
+    config = bs.StudyConfig()
+    block = bs.table_windows(fake_windows([(12.0, -1.5, 9, 0, 0.028, 0.0895, 0.0088),
+                                           (30.0, 0.75, 0, 6, 0.0195, 0.09, 0.0075)]), config)
+    heading, reading, table, not_shown = block.strip().split("\n\n")
+    assert heading == ("### B8. Exploratory: `release_aware` minus `pooled_premium` by hours of "
+                       "trading before each release, planted world (synthetic data)")
+    assert reading.startswith(
+        "Reading: Exploratory: added after the first results because B1 and the rehearsal of the "
+        "protocol analysis disagreed in sign; it was not part of the design fixed beforehand. ")
+    assert ("With 12 hours of trading before each release `release_aware` earned 1.50 USD per "
+            "event less than `pooled_premium` (mean of 10 datasets; the 95% interval lies below "
+            "zero in 9 of 10 datasets and above zero in 0).") in reading
+    assert ("With 30 hours of trading before each release `release_aware` earned 0.75 USD per "
+            "event more than `pooled_premium` (mean of 10 datasets; the 95% interval lies below "
+            "zero in 0 of 10 datasets and above zero in 6).") in reading
+    assert "The pooled premium estimated at the end is 2.80 cents with 12 hours and 1.95 cents " \
+           "with 30 hours." in reading
+    assert "10,000 replications" in reading and "\n" not in reading
+    rows = table.splitlines()
+    assert rows[0].split(" | ")[0] == "| Hours of trading before each release"
+    assert "Premium of the bucket (0,5] at the end, cents" in rows[0]
+    assert "Premium of the bucket >360 at the end, cents" in rows[0]
+    assert rows[2] == ("| 12 | 10 | -1.50 (0.10) | -2.50 to -0.50 | 9 | 0 | 1 | 0.50 | 2.80 | 8.95 "
+                       "| 0.88 |")
+    assert rows[3] == ("| 30 | 10 | +0.75 (0.10) | -0.25 to +1.75 | 0 | 6 | 4 | 0.50 | 1.95 | 9.00 "
+                       "| 0.75 |")
+    assert not_shown.startswith("Does not show: the mechanism: ") and "\n" not in not_shown
+
+
+def test_the_reading_of_the_window_table_handles_no_difference_and_three_windows():
+    config = bs.StudyConfig(boot_reps=500)
+    block = bs.table_windows(fake_windows([(6.0, 0.0, 0, 0, 0.01, 0.05, 0.0),
+                                           (12.0, -0.5, 1, 0, 0.02, 0.06, 0.01),
+                                           (30.0, 2.0, 0, 3, 0.03, 0.07, 0.02)]), config)
+    reading = next(line for line in block.splitlines() if line.startswith("Reading:"))
+    assert "With 6 hours of trading before each release `release_aware` and `pooled_premium` " \
+           "earned the same per event (mean of 10 datasets" in reading
+    assert "is 1.00 cents with 6 hours, 2.00 cents with 12 hours and 3.00 cents with 30 hours." \
+        in reading
+    assert "500 replications" in reading
+    one = bs.table_windows(fake_windows([(12.0, 1.0, 0, 1, 0.02, 0.06, 0.01)]), config)
+    assert "is 2.00 cents with 12 hours." in one
+
+
+def test_the_extra_windows_must_exist_and_differ_from_the_world_of_the_main_grid():
+    with pytest.raises(ValueError, match="empty"):
+        bs.window_runs(replace(SMALL, extra_windows=()))
+    with pytest.raises(ValueError, match="differ"):
+        bs.window_runs(replace(SMALL, extra_windows=(SMALL.world.window_hours,)))
+
+
+def test_two_policies_give_the_rows_of_the_four_policy_run():
+    params = replace(SMALL.world, pi1=0.2)
+    _, two = bs.run_dataset(params, 4, SMALL.quote, bs.PRIMARY)
+    _, four = bs.run_dataset(params, 4, SMALL.quote)
+    assert sorted(two["policy"].unique()) == sorted(bs.PRIMARY) and len(two) == len(four) // 2
+    key = ["event", "policy"]
+    kept = four[four["policy"].isin(bs.PRIMARY)].sort_values(key).reset_index(drop=True)
+    pd.testing.assert_frame_equal(two.sort_values(key).reset_index(drop=True), kept)
+
+
+def test_the_runs_of_the_extra_windows_get_no_latent_columns_and_only_the_primary_pair(monkeypatch):
+    seen = []
+    real = bs.walk_forward
+
+    def spy(tape, markets, events, policies, params, **kwargs):
+        seen.append((list(tape.columns), tuple(policies)))
+        return real(tape, markets, events, policies, params, **kwargs)
+
+    monkeypatch.setattr(bs, "walk_forward", spy)
+    config = replace(SMALL, world=WorldParams(n_events=8, window_hours=2.0), seeds=(1, 2),
+                     extra_windows=(3.0,), boot_reps=50)
+    records, per_event = bs.window_runs(config)
+    assert len(seen) == 2
+    for columns, policies in seen:
+        assert not any(c.startswith("latent_") for c in columns)
+        assert policies == bs.PRIMARY
+    assert records[["window_hours", "seed"]].values.tolist() == [[3.0, 1], [3.0, 2]]
+    assert set(per_event["policy"]) == set(bs.PRIMARY) and len(per_event) == 2 * 8 * 2
+
+
+def test_the_window_records_equal_a_recomputation_from_the_per_event_windows_file(small):
+    windows, per_event = read(small, "windows.csv"), read(small, "per_event_windows.csv")
+    extra = windows[windows["window_hours"] == SMALL.extra_windows[0]]
+    assert extra["seed"].tolist() == [1, 2, 3] and len(windows) == 2 * 3
+    assert per_event.groupby(["window_hours", "seed", "policy"]).size().eq(30).all()
+    assert per_event.groupby(["window_hours", "seed"])["evaluated"].sum().eq(2 * 25).all()
+    for row in extra.itertuples():
+        part = per_event[(per_event["seed"] == row.seed) & per_event["evaluated"]]
+        a = part[part["policy"] == "release_aware"].set_index("event")["pnl"].sort_index()
+        b = part[part["policy"] == "pooled_premium"].set_index("event")["pnl"].sort_index()
+        d = (a - b).to_numpy()
+        assert row.n_events == d.size == 25 and row.mean == pytest.approx(d.mean(), rel=1e-8)
+        key = (bs.KIND_WINDOW, 0, row.seed)
+        counts = np.random.default_rng([bs.SEED, *key]).multinomial(25, np.full(25, 1 / 25), 300)
+        lo, hi = np.quantile((counts * d).sum(axis=1) / 25, [0.025, 0.975])
+        assert (row.lo, row.hi) == pytest.approx((lo, hi), rel=1e-7, abs=1e-9)
+
+
+def test_the_default_window_rows_are_the_planted_primary_rows_of_the_pairs_file(small):
+    windows, pairs = read(small, "windows.csv"), read(small, "pairs.csv")
+    check = read(small, "premium_check.csv")
+    main = windows[windows["window_hours"] == SMALL.world.window_hours].set_index("seed")
+    primary = pairs[(pairs["sweep"] == "main") & (pairs["world"] == PLANTED)
+                    & (pairs["a"] == "release_aware") & (pairs["b"] == "pooled_premium")]
+    primary = primary.set_index("seed")
+    assert main.index.tolist() == [1, 2, 3]
+    for column in ("n_events", "mean", "lo", "hi"):
+        assert main[column].tolist() == primary.loc[main.index, column].tolist()
+    for seed in main.index:
+        end = check[(check["world"] == PLANTED) & (check["seed"] == seed)].set_index("bucket")
+        buckets = ("pooled", BUCKET_LABELS[0], BUCKET_LABELS[-1])
+        for column, bucket in zip(bs.WINDOW_PREMIUMS, buckets, strict=True):
+            assert main.loc[seed, column] == pytest.approx(end.loc[bucket, "estimate_end"])
+
+
+def test_the_premiums_of_an_extra_window_are_those_of_its_markouts(small):
+    windows = read(small, "windows.csv")
+    quote, hours, seed = SMALL.quote, SMALL.extra_windows[0], 2
+    world = generate_world(replace(SMALL.world, pi1=SMALL.planted_pi1, window_hours=hours), seed)
+    stripped = world.tape.drop(columns=[c for c in world.tape if c.startswith("latent_")])
+    markouts = trade_markouts(stripped, world.events, world.markets, horizon_s=quote.horizon_s,
+                              stale_s=quote.stale_s)
+    last = world.events["event"].iloc[-1]
+    end = estimate_premiums(markouts[markouts["event"] != last],
+                            min_events=quote.min_history_events)
+    row = windows[(windows["window_hours"] == hours) & (windows["seed"] == seed)].iloc[0]
+    assert row["premium_pooled"] == pytest.approx(end.pooled, rel=1e-7)
+    assert row["premium_near"] == pytest.approx(end.by_bucket[0], rel=1e-7)
+    assert row["premium_far"] == pytest.approx(end.by_bucket[-1], rel=1e-7)
+    assert (markouts["tau_min"] > 360.0).any()  # the world has trades in the last bucket
+    assert end.by_bucket[-1] != end.pooled  # so that bucket has a premium of its own
+
+
+def test_the_summary_and_the_table_carry_the_window_numbers(small):
+    s = small["summary"]
+    assert s["design"]["extra_windows"] == [8.0]
+    short, long = s["windows"]
+    assert (short["window_hours"], long["window_hours"]) == (2.0, 8.0)
+    assert short["n_datasets"] == long["n_datasets"] == 3
+    first = s["pairs"][f"{PLANTED}:release_aware-pooled_premium"]  # B1's planted row is the 2 h row
+    for key in ("mean", "mc_se", "min", "max", "below_zero", "above_zero", "half_width"):
+        assert short[key] == first[key]
+    text = (small["out"] / "tables.md").read_text()
+    assert f"| 8 | 3 | {long['mean']:+.2f} ({long['mc_se']:.2f}) |" in text
+    assert f"| 2 | 3 | {short['mean']:+.2f} ({short['mc_se']:.2f}) |" in text
+    assert f"{100.0 * long['premium_pooled']:.2f} | {100.0 * long['premium_near']:.2f} | " \
+           f"{100.0 * long['premium_far']:.2f} |" in text
+
+
+def test_the_readme_parser_reads_the_eight_tables_of_the_study(small, tmp_path):
+    (tmp_path / "backtest").mkdir()
+    (tmp_path / "backtest" / "tables.md").write_text((small["out"] / "tables.md").read_text())
+    tables = load_make_tables().read_tables(tmp_path)
+    assert list(tables) == [f"B{i}" for i in range(1, 9)]
+    parts = tables["B8"].split("\n\n")  # heading, Reading, table, Does not show
+    assert len(parts) == 4 and parts[0].startswith("### B8. Exploratory: ")
+    assert parts[0].endswith("(synthetic data)") and parts[1].startswith("Reading: Exploratory: ")
+    assert len(parts[2].splitlines()) == 2 + 2 and parts[3].startswith("Does not show: ")
